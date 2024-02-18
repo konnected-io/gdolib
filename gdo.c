@@ -439,7 +439,7 @@ esp_err_t gdo_lock_toggle(void) {
  * ESP_ERR_NOT_SUPPORTED if the protocol is secplus v1.
 */
 esp_err_t gdo_activate_learn(void) {
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -456,7 +456,7 @@ esp_err_t gdo_activate_learn(void) {
  * ESP_ERR_NOT_SUPPORTED if the protocol is secplus v1.
 */
 esp_err_t gdo_deactivate_learn(void) {
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -476,7 +476,7 @@ esp_err_t gdo_deactivate_learn(void) {
 esp_err_t gdo_clear_paired_devices(gdo_paired_device_type_t type) {
     esp_err_t err = ESP_OK;
 
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -1313,7 +1313,9 @@ static void update_door_state(const gdo_door_state_t door_state) {
             g_status.door_position = 0;
         } else if (door_state == GDO_DOOR_STATE_CLOSED) {
             g_status.door_position = 10000;
-            get_openings();
+            if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+                get_openings();
+            }
         }
 
         g_status.door_target = -1; // set this to a safe value to avoid moving to a target that is no longer valid
@@ -1477,10 +1479,11 @@ inline static void update_obstruction_state(gdo_obstruction_state_t obstruction_
  * @param learn_state The new learn state to update to.
 */
 inline static void update_learn_state(gdo_learn_state_t learn_state) {
+    ESP_LOGD(TAG, "Learn state: %s", gdo_learn_state_str[learn_state]);
     if (learn_state != g_status.learn) {
         g_status.learn = learn_state;
         queue_event((gdo_event_t){GDO_EVENT_LEARN_UPDATE});
-        if (learn_state == GDO_LEARN_STATE_INACTIVE) {
+        if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
         }
     }
@@ -1566,6 +1569,7 @@ inline static void update_button_state(gdo_button_state_t button_state) {
  * @param motion_state The new motion state to update to.
 */
 inline static void update_motion_state(gdo_motion_state_t motion_state) {
+    ESP_LOGD(TAG, "Motion state: %s", gdo_motion_state_str[motion_state]);
     if (motion_state == GDO_MOTION_STATE_DETECTED) {
         esp_timer_stop(motion_detect_timer);
         esp_timer_start_once(motion_detect_timer, 3000 * 1000);
@@ -1576,7 +1580,7 @@ inline static void update_motion_state(gdo_motion_state_t motion_state) {
         queue_event((gdo_event_t){GDO_EVENT_MOTION_UPDATE});
     }
 
-    if (g_status.light == GDO_LIGHT_STATE_OFF) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && g_status.light == GDO_LIGHT_STATE_OFF) {
         get_status();
     }
 }
@@ -1587,6 +1591,7 @@ inline static void update_motion_state(gdo_motion_state_t motion_state) {
  * @param count The new openings count to update to.
 */
 inline static void update_openings(uint8_t flag, uint16_t count) {
+    ESP_LOGD(TAG, "Openings: %u", count);
     if (flag == 0 || g_status.openings != 0) {
         if (g_status.openings != count) {
             g_status.openings = count;
