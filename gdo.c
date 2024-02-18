@@ -517,6 +517,51 @@ esp_err_t gdo_clear_paired_devices(gdo_paired_device_type_t type) {
     return err;
 }
 
+/**
+ * @brief Sets the Security+ V2 rolling code.
+ * @param rolling_code The rolling code to set.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the GDO is already synced.
+*/
+esp_err_t gdo_set_rolling_code(uint32_t rolling_code) {
+    if (g_status.synced) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    g_status.rolling_code = rolling_code;
+    return ESP_OK;
+}
+
+/**
+ * @brief Sets the Security+ V2 client id.
+ * @param client_id The client id to set.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the GDO is already synced.
+*/
+esp_err_t gdo_set_client_id(uint32_t client_id) {
+    if (g_status.synced) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    g_status.client_id = client_id;
+    return ESP_OK;
+}
+
+/**
+ * @brief Sets the protocol to use to communicate with the GDO.
+ * @param protocol The protocol to use.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the protocol is invalid,
+ * ESP_ERR_INVALID_STATE if the protocol is already set.
+*/
+esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol) {
+    if (g_status.protocol > 0 && g_status.protocol < GDO_PROTOCOL_MAX) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (protocol < GDO_PROTOCOL_MAX) {
+        g_status.protocol = protocol;
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_ARG;
+}
 
 /************************************ LOCAL FUNCTIONS ************************************/
 
