@@ -1546,6 +1546,7 @@ inline static void handle_lock_action(gdo_lock_action_t lock_action) {
  * @param motor_state The new motor state to update to.
 */
 inline static void update_motor_state(gdo_motor_state_t motor_state) {
+    ESP_LOGD(TAG, "Motor state: %s", gdo_motor_state_str[motor_state]);
     if (motor_state != g_status.motor) {
         g_status.motor = motor_state;
         queue_event((gdo_event_t){GDO_EVENT_MOTOR_UPDATE});
@@ -1557,6 +1558,7 @@ inline static void update_motor_state(gdo_motor_state_t motor_state) {
  * @param button_state The new button state to update to.
 */
 inline static void update_button_state(gdo_button_state_t button_state) {
+    ESP_LOGD(TAG, "Button state: %s", gdo_button_state_str[button_state]);
     if (button_state != g_status.button) {
         g_status.button = button_state;
         queue_event((gdo_event_t){GDO_EVENT_BUTTON_UPDATE});
@@ -1606,6 +1608,7 @@ inline static void update_openings(uint8_t flag, uint16_t count) {
  * @param ttc The new TTC to update to.
 */
 inline static void update_ttc(uint16_t ttc) {
+    ESP_LOGD(TAG, "TTC: %u", ttc);
     if (g_status.ttc_seconds != ttc) {
         g_status.ttc_seconds = ttc;
         queue_event((gdo_event_t){GDO_EVENT_TTC_UPDATE});
@@ -1617,6 +1620,7 @@ inline static void update_ttc(uint16_t ttc) {
  * @param type The type of paired devices to update.
 */
 inline static void update_paired_devices(gdo_paired_device_type_t type, uint8_t count) {
+    ESP_LOGD(TAG, "Paired devices: %u", count);
     bool changed = false;
     if (type == GDO_PAIRED_DEVICE_TYPE_ALL && g_status.paired_devices.total_all != count) {
         changed = true;
@@ -1645,6 +1649,7 @@ inline static void update_paired_devices(gdo_paired_device_type_t type, uint8_t 
  * @param battery_state The new battery state to update to.
 */
 inline static void update_battery_state(gdo_battery_state_t battery_state) {
+    ESP_LOGD(TAG, "Battery state: %s", gdo_battery_state_str[battery_state]);
     if (battery_state != g_status.battery) {
         g_status.battery = battery_state;
         queue_event((gdo_event_t){GDO_EVENT_BATTERY_UPDATE});
