@@ -137,7 +137,7 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         return err;
     }
 
-    if (g_config.obst_in_pin >= 0) {
+    if (g_config.obst_in_pin >= 0 && !g_config.obst_from_status) {
         gpio_config_t io_conf = {0};
         io_conf.intr_type = GPIO_INTR_NEGEDGE;
         io_conf.mode = GPIO_MODE_INPUT;
