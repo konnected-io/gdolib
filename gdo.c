@@ -104,7 +104,8 @@ static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 /**
  * @brief Initializes the GDO driver.
  * @param config The configuration for the GDO driver.
- * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the config is invalid, ESP_ERR_NO_MEM if memory allocation fails.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the config is invalid, ESP_ERR_NO_MEM if memory allocation fails,
+ * ESP_ERR_INVALID_STATE if the driver is already initialized.
 */
 esp_err_t gdo_init(const gdo_config_t *config) {
     esp_err_t err = ESP_OK;
@@ -114,8 +115,11 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (gdo_tx_queue) { // using this as a proxy for the driver being initialized
+        return ESP_ERR_INVALID_STATE;
+    }
+
     g_config = *config;
-    g_status.protocol = 0;
 
     esp_timer_create_args_t timer_args = {
         .callback = motion_detect_timer_cb,
@@ -214,9 +218,12 @@ esp_err_t gdo_init(const gdo_config_t *config) {
  * @brief Starts the GDO driver and the UART.
  * @param event_callback The callback function to be called when an event occurs.
  * @param user_arg optional user argument to be passed to the callback.
- * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, other non-zero errors.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, ESP_ERR_INVALID_STATE if the driver is not initialized.
 */
 esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg) {
+    if (!gdo_tx_queue) { // using this as a proxy for the driver being initialized
+        return ESP_ERR_INVALID_STATE;
+    }
     g_user_cb_arg = user_arg;
 
     esp_err_t err = uart_driver_install(g_config.uart_num, RX_BUFFER_SIZE, 0, 32, &gdo_event_queue, 0);
@@ -224,10 +231,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg) {
         return err;
     }
 
-    err = uart_flush(g_config.uart_num);
-    if (err != ESP_OK) {
-        return err;
-    }
+    uart_flush(g_config.uart_num);
 
     if (xTaskCreate(gdo_main_task, "gdo_main_task", 4096, NULL, 15, &gdo_main_task_handle) != pdPASS) {
         return ESP_ERR_NO_MEM;
@@ -261,11 +265,20 @@ esp_err_t gdo_get_status(gdo_status_t *status) {
 
 /**
  * @brief Starts the task that syncs the state of the GDO with the controller.
- * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, ESP_ERR_NOT_FINISHED if the task is already running,
+ * ESP_ERR_INVALID_STATE if the driver is not started or already synced.
 */
 esp_err_t gdo_sync(void) {
-    if (xTaskCreate(gdo_sync_task, "gdo_task", 4096, NULL, 15, &gdo_sync_task_handle) != pdPASS) {
-        return ESP_ERR_NO_MEM;
+    if (!gdo_main_task_handle || g_status.synced) { // using this as a proxy for the driver being started
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!gdo_sync_task_handle) {
+        if (xTaskCreate(gdo_sync_task, "gdo_task", 4096, NULL, 15, &gdo_sync_task_handle) != pdPASS) {
+            return ESP_ERR_NO_MEM;
+        }
+    } else {
+        return ESP_ERR_NOT_FINISHED;
     }
     return ESP_OK;
 }
@@ -574,45 +587,51 @@ esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol) {
 static void gdo_sync_task(void* arg) {
     bool synced = true;
 
-    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2500));
+    if (g_status.protocol <= GDO_PROTOCOL_SEC_PLUS_V1) {
+        uart_set_baudrate(g_config.uart_num, 1200);
+        uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
+        uart_flush(g_config.uart_num);
+        xQueueReset(gdo_event_queue);
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2500));
 
-    if (!g_status.protocol) {
-        ESP_LOGW(TAG, "Protocol not set, trying secplus V1 panel emulation");
-        esp_timer_create_args_t timer_args = {
-            .callback = v1_status_timer_cb,
-            .arg = NULL,
-            .dispatch_method = ESP_TIMER_TASK,
-            .name = "v1_status_timer"
-        };
+        if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+            ESP_LOGW(TAG, "V1 panel not found, trying emulation");
+            esp_timer_create_args_t timer_args = {
+                .callback = v1_status_timer_cb,
+                .arg = NULL,
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = "v1_status_timer"
+            };
 
-        esp_timer_handle_t v1_status_timer;
-        if (esp_timer_create(&timer_args, &v1_status_timer) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to create v1 status timer");
-            synced = false;
-            goto done;
-        } else {
-            uart_flush(g_config.uart_num);
-            vTaskDelay(pdMS_TO_TICKS(10));
-            esp_timer_start_periodic(v1_status_timer, 250 * 1000);
-        }
+            esp_timer_handle_t v1_status_timer;
+            if (esp_timer_create(&timer_args, &v1_status_timer) != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to create V1 status timer");
+                synced = false;
+                goto done;
+            } else {
+                uart_flush(g_config.uart_num);
+                xQueueReset(gdo_event_queue);
+                esp_timer_start_periodic(v1_status_timer, 250 * 1000);
+            }
 
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
 
-        if (!g_status.protocol) {
-            ESP_LOGW(TAG, "secplus V1 panel emulation failed, trying secplus V2 panel emulation");
-            esp_timer_stop(v1_status_timer);
-            esp_timer_delete(v1_status_timer);
-            uart_flush(g_config.uart_num);
-            uart_set_baudrate(g_config.uart_num, 9600);
-            uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        } else if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
-            goto done;
+            if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+                ESP_LOGW(TAG, "secplus V1 panel emulation failed, trying secplus V2 panel emulation");
+                esp_timer_stop(v1_status_timer);
+                esp_timer_delete(v1_status_timer);
+            } else {
+                goto done;
+            }
         }
     }
 
     uint32_t start_ms = esp_timer_get_time() / 1000;
     g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
+    uart_set_baudrate(g_config.uart_num, 9600);
+    uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
+    uart_flush(g_config.uart_num);
+    xQueueReset(gdo_event_queue);
 
     for (;;) {
         if ((esp_timer_get_time() / 1000) - start_ms > 30000) {
@@ -659,7 +678,7 @@ static void gdo_sync_task(void* arg) {
 done:
     g_status.synced = synced;
     if (!synced) {
-            g_status.protocol = 0;
+        g_status.protocol = 0;
     }
     queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
     gdo_sync_task_handle = NULL;
@@ -1074,10 +1093,6 @@ static void gdo_main_task(void* arg) {
                         ESP_LOGD(TAG, "Received %u bytes, unknown protocol", event.uart_event.size);
                         uart_flush(g_config.uart_num);
                     }
-
-                    if (g_status.protocol && gdo_sync_task_handle) {
-                        xTaskNotifyGive(gdo_sync_task_handle);
-                    }
                 }
 
                 if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
@@ -1261,6 +1276,12 @@ static void update_door_state(const gdo_door_state_t door_state) {
     if (door_state > GDO_DOOR_STATE_UNKNOWN && door_state < GDO_DOOR_STATE_MAX) {
         esp_timer_stop(door_position_sync_timer);
     } else {
+        // If we are still detecting the protcol and we get here but the door state is not valid, reset the protocol.
+        if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1 &&
+            g_status.door == GDO_DOOR_STATE_UNKNOWN &&
+            gdo_sync_task_handle) {
+            g_status.protocol = 0;
+        }
         return;
     }
 
@@ -1321,6 +1342,12 @@ static void update_door_state(const gdo_door_state_t door_state) {
         g_status.door_target = -1; // set this to a safe value to avoid moving to a target that is no longer valid
         g_door_start_moving_ms = 0;
         g_status.motor = GDO_MOTOR_STATE_OFF;
+    }
+
+    if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
+        g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1 &&
+        gdo_sync_task_handle) {
+        xTaskNotifyGive(gdo_sync_task_handle);
     }
 
     g_status.door = door_state;
