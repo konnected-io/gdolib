@@ -61,6 +61,7 @@ static esp_err_t queue_event(gdo_event_t event);
 static gdo_event_callback_t g_event_callback;
 
 static gdo_status_t g_status = {
+    .protocol = 0,
     .door = GDO_DOOR_STATE_UNKNOWN,
     .light = GDO_LIGHT_STATE_MAX,
     .lock = GDO_LOCK_STATE_MAX,
@@ -81,11 +82,11 @@ static gdo_status_t g_status = {
     .close_ms = 0,
     .door_position = -1,
     .door_target = -1,
+    .client_id = 0x666,
+    .rolling_code = 0,
 };
 
 static gdo_config_t g_config;
-static uint32_t g_client_id = 0x666;
-static uint32_t g_rolling_code;
 static uint32_t g_door_start_moving_ms;
 static TaskHandle_t gdo_main_task_handle;
 static TaskHandle_t gdo_sync_task_handle;
@@ -108,12 +109,13 @@ static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 esp_err_t gdo_init(const gdo_config_t *config) {
     esp_err_t err = ESP_OK;
 
-    if (!config || config->protocol >= GDO_PROTOCOL_MAX) {
+    if (!config || config->uart_num >= UART_NUM_MAX ||
+        config->uart_tx_pin >= GPIO_NUM_MAX || config->uart_rx_pin >= GPIO_NUM_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
 
     g_config = *config;
-    g_config.protocol = 0;
+    g_status.protocol = 0;
 
     esp_timer_create_args_t timer_args = {
         .callback = motion_detect_timer_cb,
@@ -346,7 +348,7 @@ esp_err_t gdo_light_on(void) {
         return ESP_OK;
     }
 
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
     } else {
         return queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_ON, 0, 0);
@@ -362,7 +364,7 @@ esp_err_t gdo_light_off(void) {
         return ESP_OK;
     }
 
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
     } else {
         return queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_OFF, 0, 0);
@@ -393,7 +395,7 @@ esp_err_t gdo_lock(void) {
         return ESP_OK;
     }
 
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS, 500000);
     } else {
         return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_LOCK, 0, 0);
@@ -409,7 +411,7 @@ esp_err_t gdo_unlock(void) {
         return ESP_OK;
     }
 
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS, 500000);
     } else {
         return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_UNLOCK, 0, 0);
@@ -437,7 +439,7 @@ esp_err_t gdo_lock_toggle(void) {
  * ESP_ERR_NOT_SUPPORTED if the protocol is secplus v1.
 */
 esp_err_t gdo_activate_learn(void) {
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -454,7 +456,7 @@ esp_err_t gdo_activate_learn(void) {
  * ESP_ERR_NOT_SUPPORTED if the protocol is secplus v1.
 */
 esp_err_t gdo_deactivate_learn(void) {
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -474,7 +476,7 @@ esp_err_t gdo_deactivate_learn(void) {
 esp_err_t gdo_clear_paired_devices(gdo_paired_device_type_t type) {
     esp_err_t err = ESP_OK;
 
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return ESP_ERR_NOT_SUPPORTED;
     }
 
@@ -529,7 +531,7 @@ static void gdo_sync_task(void* arg) {
 
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2500));
 
-    if (!g_config.protocol) {
+    if (!g_status.protocol) {
         ESP_LOGW(TAG, "Protocol not set, trying secplus V1 panel emulation");
         esp_timer_create_args_t timer_args = {
             .callback = v1_status_timer_cb,
@@ -551,7 +553,7 @@ static void gdo_sync_task(void* arg) {
 
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
 
-        if (!g_config.protocol) {
+        if (!g_status.protocol) {
             ESP_LOGW(TAG, "secplus V1 panel emulation failed, trying secplus V2 panel emulation");
             esp_timer_stop(v1_status_timer);
             esp_timer_delete(v1_status_timer);
@@ -559,13 +561,13 @@ static void gdo_sync_task(void* arg) {
             uart_set_baudrate(g_config.uart_num, 9600);
             uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
             vTaskDelay(pdMS_TO_TICKS(1000));
-        } else if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+        } else if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
             goto done;
         }
     }
 
     uint32_t start_ms = esp_timer_get_time() / 1000;
-    g_config.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
+    g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
 
     for (;;) {
         if ((esp_timer_get_time() / 1000) - start_ms > 30000) {
@@ -607,12 +609,12 @@ static void gdo_sync_task(void* arg) {
         break;
     }
 
-    ESP_LOGD(TAG, "Rolling code: %lu", g_rolling_code);
+    ESP_LOGD(TAG, "Rolling code: %lu", g_status.rolling_code);
 
 done:
     g_status.synced = synced;
     if (!synced) {
-            g_config.protocol = 0;
+            g_status.protocol = 0;
     }
     queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
     gdo_sync_task_handle = NULL;
@@ -810,22 +812,22 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
     message.sent_ms = esp_timer_get_time() / 1000;
 
     // if we are here without a protocol defined then V1 testing failed, proceed with v2
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
         uint64_t cmd = command;
-        uint64_t fixed = ((cmd & ~0xff) << 24) | g_client_id;
+        uint64_t fixed = ((cmd & ~0xff) << 24) | g_status.client_id;
         uint32_t data = (byte2 << 24) | (byte1 << 16) | (nibble << 8) | (cmd & 0xff);
 
-        if (encode_wireline(g_rolling_code, fixed, data, message.packet) != 0) {
+        if (encode_wireline(g_status.rolling_code, fixed, data, message.packet) != 0) {
             free(message.packet);
             return ESP_FAIL;
         }
 
-        g_rolling_code++;
+        g_status.rolling_code++;
     } else {
         *message.packet = command;
     }
 
-    print_buffer(g_config.protocol, message.packet, true);
+    print_buffer(g_status.protocol, message.packet, true);
     if (xQueueSendToBack(gdo_tx_queue, &message, 0) == pdFALSE) {
         return ESP_ERR_NO_MEM;
     }
@@ -841,7 +843,7 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
 static esp_err_t transmit_packet(uint8_t *packet) {
     esp_err_t err = ESP_OK;
 
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
         // The packet transmission needs to start with a break, which is a low signal for approximately 13 bit times.
         // Since the UART driver does not support a break signal, we set the baud rate to 6900  and write a single
         // byte of 0x00 to simulate the break. 8 data bits + 1 start bit = ~1305us of low time, then 144us time high for the stop.
@@ -948,7 +950,7 @@ static void decode_packet(uint8_t *packet) {
 
     data &= ~0xf000;
 
-    if ((fixed & 0xFFFFFFFF) == g_client_id) { // my commands
+    if ((fixed & 0xFFFFFFFF) == g_status.client_id) { // my commands
         ESP_LOGE(TAG, "received mine: rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
         return;
     } else {
@@ -1011,29 +1013,29 @@ static void gdo_main_task(void* arg) {
             switch ((int)event.gdo_event) {
             case UART_BREAK:
                 // All messages from the GDO start with a break if using V2 protocol.
-                if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+                if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
                     ++rx_pending;
                 }
                 break;
             case UART_DATA:
-                if (!g_config.protocol) {
+                if (!g_status.protocol) {
                     if (event.uart_event.size == 2) {
                         ESP_LOGD(TAG, "Received 2 bytes, using protocol V1");
-                        g_config.protocol = GDO_PROTOCOL_SEC_PLUS_V1;
+                        g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V1;
                     } else if (event.uart_event.size == 20 || event.uart_event.size == 19 || rx_pending) {
                         ESP_LOGD(TAG, "Received %u bytes, using protocol V2", event.uart_event.size);
-                        g_config.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
+                        g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
                     } else {
                         ESP_LOGD(TAG, "Received %u bytes, unknown protocol", event.uart_event.size);
                         uart_flush(g_config.uart_num);
                     }
 
-                    if (g_config.protocol && gdo_sync_task_handle) {
+                    if (g_status.protocol && gdo_sync_task_handle) {
                         xTaskNotifyGive(gdo_sync_task_handle);
                     }
                 }
 
-                if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+                if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
                     if (!rx_pending) {
                         // got a packet without a break first? ignore it.
                         ESP_LOGI(TAG, "Unexpected RX data, flushing.");
@@ -1071,14 +1073,14 @@ static void gdo_main_task(void* arg) {
                                 continue;
                             }
 
-                            print_buffer(g_config.protocol, rx_buffer, false);
+                            print_buffer(g_status.protocol, rx_buffer, false);
                             decode_packet(rx_buffer);
                         } else {
                             ESP_LOGE(TAG, "RX buffer read error, %u pending messages.", rx_pending);
                         }
                         --rx_pending;
                     }
-                } else if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+                } else if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
                     if (event.uart_event.size != GDO_PACKET_SIZE) {
                         ESP_LOGE(TAG, "RX data size error: %u", event.uart_event.size);
                         uart_read_bytes(g_config.uart_num, rx_buffer, event.uart_event.size, 0);
@@ -1086,7 +1088,7 @@ static void gdo_main_task(void* arg) {
                     }
 
                     if (uart_read_bytes(g_config.uart_num, rx_buffer, GDO_PACKET_SIZE, 0) == 2) {
-                        print_buffer(g_config.protocol, rx_buffer, false);
+                        print_buffer(g_status.protocol, rx_buffer, false);
                         decode_v1_packet(rx_buffer);
                     } else {
                         ESP_LOGE(TAG, "RX buffer read error");
@@ -1101,7 +1103,7 @@ static void gdo_main_task(void* arg) {
                 }
                 break;
             case UART_PARITY_ERR:
-                if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+                if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
                         ESP_LOGE(TAG, "Parity error, check wiring?");
                 }
                 break;
@@ -1130,15 +1132,18 @@ static void gdo_main_task(void* arg) {
                                 } while (err != ESP_OK && --retry_count);
                             }
 
-                            ESP_LOGD(TAG, "Sent command: %s", cmd_to_string(tx_message.cmd));
                             free(tx_message.packet);
                         } else {
                             err = ESP_ERR_INVALID_ARG;
                         }
 
                         if (err != ESP_OK) {
-                            ESP_LOGE(TAG, "Failed to TX message: %s - %s", cmd_to_string(tx_message.cmd), esp_err_to_name(err));
+                            ESP_LOGE(TAG, "Failed to TX message: %s - %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ?
+                                     cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd), esp_err_to_name(err));
                             // TODO: send message to app about the failure
+                        } else {
+                            ESP_LOGD(TAG, "Sent command: %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ?
+                                     cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd));
                         }
 
                         if (--tx_pending) {
@@ -1373,12 +1378,12 @@ inline static esp_err_t get_openings() {
 */
 inline static esp_err_t send_door_action(gdo_door_action_t action) {
     esp_err_t err = ESP_OK;
-    if (g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_DOOR_PRESS, 500000);
     } else {
         err = queue_command(GDO_CMD_DOOR_ACTION, action, 1, 1);
         if (err == ESP_OK) {
-            --g_rolling_code; // only increment after the second command
+            --g_status.rolling_code; // only increment after the second command
             err = queue_command(GDO_CMD_DOOR_ACTION, action, 0, 1);
         }
     }
