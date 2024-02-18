@@ -125,6 +125,7 @@ typedef struct {
 } gdo_paired_device_t;
 
 typedef struct {
+    gdo_protocol_type_t protocol; // Protocol type
     gdo_door_state_t door; // Door state
     gdo_light_state_t light; // Light state
     gdo_lock_state_t lock; // Lock state
@@ -142,11 +143,12 @@ typedef struct {
     uint16_t close_ms; // Time door takes to close from fully open in milliseconds
     int32_t door_position; // Door position in percentage (0-10000) [OPEN-CLOSED]
     int32_t door_target; // Door target position in percentage (0-10000) [OPEN-CLOSED]
+    uint32_t client_id; // Client ID
+    uint32_t rolling_code; // Rolling code
 } gdo_status_t;
 
 typedef struct {
     uart_port_t uart_num; // UART port number
-    gdo_protocol_type_t protocol;  // Protocol type
     bool obst_from_status; // Use obstruction status from status message
     bool invert_uart; // Invert UART signal
     gpio_num_t uart_tx_pin; // UART TX pin

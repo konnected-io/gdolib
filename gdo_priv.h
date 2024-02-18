@@ -27,7 +27,7 @@ extern "C" {
 #include "esp_log.h"
 
 #define RX_BUFFER_SIZE 160
-#define GDO_PACKET_SIZE ((g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V2) ? 19UL : 2UL)
+#define GDO_PACKET_SIZE ((g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) ? 19UL : 2UL)
 
 static const char *TAG = "gdolib";
 
