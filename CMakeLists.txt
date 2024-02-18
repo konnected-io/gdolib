@@ -1,0 +1,9 @@
+idf_component_register(SRCS
+                            "gdo.c"
+                            "gdo_utils.c"
+                       INCLUDE_DIRS
+                            "include"
+                       REQUIRES
+                            driver
+                            esp_timer
+)

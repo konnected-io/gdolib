@@ -1,0 +1,4 @@
+## IDF Component Manager Manifest File
+dependencies:
+  konnected-io/secplus:
+    git: "https://github.com/konnected-io/secplus"
