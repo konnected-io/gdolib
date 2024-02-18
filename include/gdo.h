@@ -169,7 +169,7 @@ typedef void (*gdo_event_callback_t)(const gdo_status_t *status, gdo_cb_event_t 
 /**
  * @brief Initializes the GDO driver.
  * @param config The configuration for the GDO driver.
- * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the config is invalid, ESP_ERR_NO_MEM if memory allocation fails.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, ESP_ERR_INVALID_STATE if the driver is not initialized.
 */
 esp_err_t gdo_init(const gdo_config_t *config);
 
@@ -190,7 +190,7 @@ esp_err_t gdo_get_status(gdo_status_t *status);
 
 /**
  * @brief Starts the task that syncs the state of the GDO with the controller.
- * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, ESP_ERR_NOT_FINISHED if the task is already running.
 */
 esp_err_t gdo_sync(void);
 
