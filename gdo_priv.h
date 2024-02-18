@@ -26,20 +26,10 @@ extern "C" {
 #include "gdo.h"
 #include "esp_log.h"
 
-#ifdef MAX
-#undef MAX
-#endif
-#ifdef MIN
-#undef MIN
-#endif
-#define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
-#define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
-
-#define ESP_INTR_FLAG_DEFAULT 0
 #define RX_BUFFER_SIZE 160
 #define GDO_PACKET_SIZE ((g_config.protocol == GDO_PROTOCOL_SEC_PLUS_V2) ? 19UL : 2UL)
 
-static const char *TAG = "gdo";
+static const char *TAG = "gdolib";
 
 typedef enum {
     GDO_CMD_UNKNOWN = 0x000,
@@ -71,6 +61,20 @@ typedef enum {
     GDO_CMD_OPENINGS = 0x48c,
     GDO_CMD_MAX,
 } gdo_command_t;
+
+typedef enum {
+    V1_CMD_TOGGLE_DOOR_PRESS = 0x30,
+    V1_CMD_TOGGLE_DOOR_RELEASE = 0x31,
+    V1_CMD_TOGGLE_LIGHT_PRESS = 0x32,
+    V1_CMD_TOGGLE_LIGHT_RELEASE = 0x33,
+    V1_CMD_TOGGLE_LOCK_PRESS = 0x34,
+    V1_CMD_TOGGLE_LOCK_RELEASE = 0x35,
+    V1_CMD_QUERY_DOOR_STATUS_0x37 = 0x37,
+    V1_CMD_QUERY_DOOR_STATUS = 0x38,
+    V1_CMD_OBSTRUCTION = 0x39,
+    V1_CMD_QUERY_OTHER_STATUS = 0x3A,
+    V1_CMD_MAX = 0xFF,
+} gdo_v1_command_t;
 
 typedef enum {
     GDO_EVENT_TX_PENDING = UART_EVENT_MAX + 1,
@@ -144,6 +148,7 @@ typedef union {
 } gdo_event_t;
 
 const char* cmd_to_string(gdo_command_t cmd);
+const char* v1_cmd_to_string(gdo_v1_command_t cmd);
 void print_buffer(gdo_protocol_type_t protocol, uint8_t* buf, bool is_tx);
 
 extern const char *gdo_door_state_str[];

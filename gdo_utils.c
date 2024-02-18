@@ -107,6 +107,7 @@ const char *gdo_door_action_str[] = {
 };
 
 const char *gdo_protocol_type_str[] = {
+    "Unknown"
     "Security+ 1.0",
     "Security+ 2.0",
 };
@@ -165,6 +166,33 @@ const char* cmd_to_string(gdo_command_t cmd) {
             return "GET_OPENINGS";
         case GDO_CMD_OPENINGS:
             return "OPENINGS";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+const char* v1_cmd_to_string(gdo_v1_command_t cmd) {
+    switch (cmd) {
+        case V1_CMD_TOGGLE_DOOR_PRESS:
+            return "TOGGLE_DOOR_PRESS";
+        case V1_CMD_TOGGLE_DOOR_RELEASE:
+            return "TOGGLE_DOOR_RELEASE";
+        case V1_CMD_TOGGLE_LIGHT_PRESS:
+            return "TOGGLE_LIGHT_PRESS";
+        case V1_CMD_TOGGLE_LIGHT_RELEASE:
+            return "TOGGLE_LIGHT_RELEASE";
+        case V1_CMD_TOGGLE_LOCK_PRESS:
+            return "TOGGLE_LOCK_PRESS";
+        case V1_CMD_TOGGLE_LOCK_RELEASE:
+            return "TOGGLE_LOCK_RELEASE";
+        case V1_CMD_QUERY_DOOR_STATUS_0x37:
+            return "QUERY_DOOR_STATUS_0x37";
+        case V1_CMD_QUERY_DOOR_STATUS:
+            return "QUERY_DOOR_STATUS";
+        case V1_CMD_OBSTRUCTION:
+            return "OBSTRUCTION";
+        case V1_CMD_QUERY_OTHER_STATUS:
+            return "QUERY_OTHER_STATUS";
         default:
             return "UNKNOWN";
     }
