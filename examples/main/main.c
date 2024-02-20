@@ -24,7 +24,19 @@ static void gdo_event_handler(const gdo_status_t* status, gdo_cb_event_t event, 
 {
     switch (event) {
     case GDO_CB_EVENT_SYNCED:
-        ESP_LOGI(TAG, "Synced: %s", status->synced ? "true" : "false");
+        ESP_LOGI(TAG, "Synced: %s, protocol: %s", status->synced ? "true" : "false", gdo_protocol_type_to_string(status->protocol));
+        if (status->protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+            ESP_LOGI(TAG, "Client ID: %" PRIu32 ", Rolling code: %" PRIu32, status->client_id, status->rolling_code);
+        }
+
+        if (!status->synced) {
+            if (gdo_set_rolling_code(status->rolling_code + 100) != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to set rolling code");
+            } else {
+                ESP_LOGI(TAG, "Rolling code set to %" PRIu32 ", retryng sync", status->rolling_code);
+                gdo_sync();
+            }
+        }
         break;
     case GDO_CB_EVENT_LIGHT:
         ESP_LOGI(TAG, "Light: %s", gdo_light_state_to_string(status->light));
@@ -77,7 +89,6 @@ void app_main(void)
     gdo_config_t gdo_conf = {
         .invert_uart = true,
         .obst_from_status = true,
-        .protocol = GDO_PROTOCOL_SEC_PLUS_V2,
         .uart_num = UART_NUM_1,
         .uart_tx_pin = 1,
         .uart_rx_pin = 2,
