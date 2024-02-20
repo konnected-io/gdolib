@@ -673,8 +673,6 @@ static void gdo_sync_task(void* arg) {
         break;
     }
 
-    ESP_LOGD(TAG, "Rolling code: %lu", g_status.rolling_code);
-
 done:
     g_status.synced = synced;
     if (!synced) {
