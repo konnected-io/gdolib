@@ -357,15 +357,22 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_light_on(void) {
+    esp_err_t err = ESP_OK;
+
     if (g_status.light == GDO_LIGHT_STATE_ON) {
-        return ESP_OK;
+        return err;
     }
 
     if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
     } else {
-        return queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_ON, 0, 0);
+        err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_ON, 0, 0);
+        if (err == ESP_OK) {
+            err = get_status();
+        }
     }
+
+    return err;
 }
 
 /**
@@ -373,15 +380,22 @@ esp_err_t gdo_light_on(void) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_light_off(void) {
+    esp_err_t err = ESP_OK;
+
     if (g_status.light == GDO_LIGHT_STATE_OFF) {
-        return ESP_OK;
+        return err;
     }
 
     if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
     } else {
-        return queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_OFF, 0, 0);
+        err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_OFF, 0, 0);
+        if (err == ESP_OK) {
+            err = get_status();
+        }
     }
+
+    return err;
 }
 
 /**
