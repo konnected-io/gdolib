@@ -86,6 +86,7 @@ static gdo_status_t g_status = {
     .rolling_code = 0,
 };
 
+static bool g_protocol_forced;
 static gdo_config_t g_config;
 static uint32_t g_door_start_moving_ms;
 static TaskHandle_t gdo_main_task_handle;
@@ -585,6 +586,7 @@ esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol) {
 
     if (protocol < GDO_PROTOCOL_MAX) {
         g_status.protocol = protocol;
+        g_protocol_forced = true;
         return ESP_OK;
     }
     return ESP_ERR_INVALID_ARG;
@@ -630,7 +632,7 @@ static void gdo_sync_task(void* arg) {
 
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
 
-            if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+            if (g_status.door == GDO_DOOR_STATE_UNKNOWN && !g_protocol_forced) {
                 ESP_LOGW(TAG, "secplus V1 panel emulation failed, trying secplus V2 panel emulation");
                 esp_timer_stop(v1_status_timer);
                 esp_timer_delete(v1_status_timer);
@@ -689,7 +691,7 @@ static void gdo_sync_task(void* arg) {
 
 done:
     g_status.synced = synced;
-    if (!synced) {
+    if (!synced && !g_protocol_forced) {
         g_status.protocol = 0;
     }
     queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
