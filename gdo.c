@@ -764,6 +764,8 @@ static void door_position_sync_timer_cb(void* arg) {
         g_status.door_position = 10000;
     }
 
+    g_door_start_moving_ms += duration;
+
     if (g_status.door_position == 0 || g_status.door_position == 10000) {
         esp_timer_stop(door_position_sync_timer);
     }
