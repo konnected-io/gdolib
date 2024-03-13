@@ -1295,6 +1295,12 @@ static void gdo_main_task(void* arg) {
             case GDO_EVENT_PAIRED_DEVICES_UPDATE:
                 cb_event = GDO_CB_EVENT_PAIRED_DEVICES;
                 break;
+            case GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT:
+                cb_event = GDO_CB_EVENT_OPEN_DURATION_MEASURMENT;
+                break;
+            case GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT:
+                cb_event = GDO_CB_EVENT_CLOSE_DURATION_MEASURMENT;
+                break;
             default:
                 ESP_LOGE(TAG, "Unhandled gdo event: %d", event.gdo_event);
                 break;
@@ -1339,6 +1345,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
         if (door_state == GDO_DOOR_STATE_OPEN && g_status.door == GDO_DOOR_STATE_OPENING && start_opening != 0) {
             g_status.open_ms = (uint16_t)((esp_timer_get_time() - start_opening) / 1000ULL);
             ESP_LOGV(TAG, "Open time: %u", g_status.open_ms);
+            queue_event((gdo_event_t){GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT});
         }
         if (door_state == GDO_DOOR_STATE_STOPPED) {
             start_opening = -1;
@@ -1352,6 +1359,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
         if (door_state == GDO_DOOR_STATE_CLOSED && g_status.door == GDO_DOOR_STATE_CLOSING && start_closing != 0) {
             g_status.close_ms = (uint16_t)((esp_timer_get_time() - start_closing) / 1000ULL);
             ESP_LOGV(TAG, "Close time: %u", g_status.close_ms);
+            queue_event((gdo_event_t){GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT});
         }
         if (door_state == GDO_DOOR_STATE_STOPPED) {
             start_closing = -1;
