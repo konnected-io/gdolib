@@ -381,6 +381,20 @@ esp_err_t gdo_set_client_id(uint32_t client_id);
 */
 esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol);
 
+/**
+ * @brief Sets the time the door takes to open from fully closed in milliseconds.
+ * @param ms The time the door takes to open from fully closed in milliseconds.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
+*/
+esp_err_t gdo_set_open_duration(uint16_t ms);
+
+/**
+ * @brief Sets the time the door takes to close from fully open in milliseconds.
+ * @param ms The time the door takes to close from fully open in milliseconds.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
+*/
+esp_err_t gdo_set_close_duration(uint16_t ms);
+
 #ifdef __cplusplus
 }
 #endif // __cplusplus
