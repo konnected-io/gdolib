@@ -586,7 +586,7 @@ esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol) {
 
     if (protocol < GDO_PROTOCOL_MAX) {
         g_status.protocol = protocol;
-        g_protocol_forced = true;
+        g_protocol_forced = protocol > 0;
         return ESP_OK;
     }
     return ESP_ERR_INVALID_ARG;
