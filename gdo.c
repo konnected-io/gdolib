@@ -909,9 +909,14 @@ static esp_err_t queue_v1_command(gdo_v1_command_t command) {
  * @param byte1 The first byte of the command.
  * @param byte2 The second byte of the command.
  * @details The command is encoded into a packet and queued to be sent to the GDO.
- * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the driver is not initialized,
+ *  ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t byte1, uint8_t byte2) {
+    if (!gdo_tx_queue) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     gdo_tx_message_t message;
     message.cmd = command;
     message.packet = (uint8_t*)malloc(19); // will be freed in the gdo_main_task
@@ -1736,9 +1741,15 @@ inline static void update_battery_state(gdo_battery_state_t battery_state) {
 /**
  * @brief Queues an event to the event queue.
  * @param event The event to queue.
- * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the gdo event queue hasn't been created yet,
+ * ESP_ERR_NO_MEM if the queue is full.
 */
 inline static esp_err_t queue_event(gdo_event_t event) {
+    if (!gdo_event_queue) {
+        ESP_LOGE(TAG, "Event Queue not created!");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (xQueueSend(gdo_event_queue, &event, 0) == pdFALSE) {
         ESP_LOGE(TAG, "Event Queue Full!");
         return ESP_ERR_NO_MEM;
