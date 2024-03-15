@@ -47,7 +47,6 @@ static void decode_packet(uint8_t *packet);
 static esp_err_t get_status();
 static esp_err_t get_openings();
 static esp_err_t send_door_action(gdo_door_action_t action);
-static esp_err_t continue_to_target(void);
 static esp_err_t transmit_packet(uint8_t *packet);
 static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t byte1, uint8_t byte2);
 static esp_err_t queue_v1_command(gdo_v1_command_t command);
@@ -289,6 +288,8 @@ esp_err_t gdo_sync(void) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_door_open(void) {
+    g_status.door_target = 0;
+
     if (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_OPEN) {
         return ESP_OK;
     }
@@ -301,13 +302,10 @@ esp_err_t gdo_door_open(void) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_door_close(void) {
+    g_status.door_target = 10000;
+
     if (g_status.door == GDO_DOOR_STATE_CLOSING || g_status.door == GDO_DOOR_STATE_CLOSED) {
         return ESP_OK;
-    }
-
-    if (g_status.door == GDO_DOOR_STATE_OPENING) {
-        // we need to stop the door then continue so set the target and wait for the door to stop
-        return gdo_door_move_to_target(10000);
     }
 
     return send_door_action(GDO_DOOR_ACTION_CLOSE);
@@ -336,21 +334,60 @@ esp_err_t gdo_door_toggle(void) {
 /**
  * @brief Moves the door to a specific target position.
  * @param target The target position to move the door to, 0-10000.
- * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the target is out of range,
- * ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the target is out of range, ESP_ERR_NO_MEM if the queue
+ * is full, ESP_ERR_INVALID_STATE if the door position or durations are unknown or the door is moving.
 */
 esp_err_t gdo_door_move_to_target(uint32_t target) {
+    esp_err_t err = ESP_OK;
+
     if (target > 10000) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    g_status.door_target = target;
-
-    if (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING) {
-        return gdo_door_stop(); // door will continue to target after stopping
+    if (g_status.door_position < 0 || g_status.close_ms == 0 || g_status.open_ms == 0 ||
+        g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING) {
+        ESP_LOGW(TAG, "Unable to move to target, door position or durations are unknown or door is moving");
+        return ESP_ERR_INVALID_STATE;
     }
 
-    return continue_to_target();
+    g_status.door_target = target;
+
+    if (g_status.door_target == 0) {
+        return gdo_door_open();
+    } else if (g_status.door_target == 10000) {
+        return gdo_door_close();
+    }
+
+    gdo_door_action_t action = GDO_DOOR_ACTION_MAX;
+    int delta = g_status.door_position - g_status.door_target;
+    float duration_ms = 0.0f;
+    if (delta < 0) {
+        action = GDO_DOOR_ACTION_CLOSE;
+        duration_ms = (g_status.close_ms / 10000.f) * -delta;
+    } else if (delta > 0) {
+        action = GDO_DOOR_ACTION_OPEN;
+        duration_ms = (g_status.open_ms / 10000.f) * delta;
+    } else {
+        ESP_LOGD(TAG, "Door is already at target %.2f", g_status.door_position / 100.0f);
+        return ESP_OK;
+    }
+
+    if (duration_ms < 1000) {
+        ESP_LOGW(TAG, "Duration is too short, ignoring move to target");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    gdo_sched_cmd_args_t args = {
+        .cmd = (uint32_t)GDO_DOOR_ACTION_STOP,
+        .door_cmd = true,
+    };
+    err = schedule_command(&args, duration_ms * 1000);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = send_door_action(action);
+    return err;
 }
 
 /**
@@ -1382,10 +1419,9 @@ static void update_door_state(const gdo_door_state_t door_state) {
         }
     } else {
         if (door_state == GDO_DOOR_STATE_STOPPED) {
-            if (g_status.door_target >= 0) {
-                if (continue_to_target() !=ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to continue to target");
-                }
+            int delta = g_status.door_position - g_status.door_target;
+            if (delta < -5000 || delta > 5000) {
+                ESP_LOGE(TAG, "Door failed to reach target");
             }
         } else if (door_state == GDO_DOOR_STATE_OPEN) {
             g_status.door_position = 0;
@@ -1396,7 +1432,6 @@ static void update_door_state(const gdo_door_state_t door_state) {
             }
         }
 
-        g_status.door_target = -1; // set this to a safe value to avoid moving to a target that is no longer valid
         g_door_start_moving_ms = 0;
         g_status.motor = GDO_MOTOR_STATE_OFF;
     }
@@ -1409,60 +1444,6 @@ static void update_door_state(const gdo_door_state_t door_state) {
 
     g_status.door = door_state;
     queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
-}
-
-/**
- * @brief Moves the door to the target position.
- * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the target would take less than 1 second to reach,
- * ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails, other non-zero errors.
-*/
-static esp_err_t continue_to_target(void) {
-    esp_err_t err = ESP_OK;
-    if (g_status.door_position >= 0 && g_status.close_ms > 0 && g_status.open_ms > 0 && g_status.door_target >= 0) {
-        if (g_status.door_target == 0) {
-            return gdo_door_open();
-        } else if (g_status.door_target == 10000) {
-            return gdo_door_close();
-        }
-
-        gdo_door_action_t action = GDO_DOOR_ACTION_MAX;
-        int delta = g_status.door_position - g_status.door_target;
-        float duration_ms = 0.0f;
-        if (delta < 0) {
-            action = GDO_DOOR_ACTION_CLOSE;
-            duration_ms = (g_status.close_ms / 10000.f) * -delta;
-        } else if (delta > 0) {
-            action = GDO_DOOR_ACTION_OPEN;
-            duration_ms = (g_status.open_ms / 10000.f) * delta;
-        } else {
-            ESP_LOGD(TAG, "Door is already at target %.2f", g_status.door_position / 100.0f);
-            return ESP_OK;
-        }
-
-        if (duration_ms < 1000) {
-            ESP_LOGW(TAG, "Duration is too short, ignoring move to target");
-            return ESP_ERR_INVALID_ARG;
-        }
-
-        gdo_sched_cmd_args_t args = {
-            .cmd = (uint32_t)GDO_DOOR_ACTION_STOP,
-            .door_cmd = true,
-        };
-        err = schedule_command(&args, duration_ms * 1000);
-        if (err != ESP_OK) {
-            return err;
-        }
-
-        err = send_door_action(action);
-        if (err != ESP_OK) {
-            return err;
-        }
-    } else {
-        ESP_LOGW(TAG, "Can't continue to target, missing data");
-        return ESP_FAIL;
-    }
-
-    return err;
 }
 
 /**
