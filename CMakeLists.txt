@@ -1,6 +1,7 @@
 idf_component_register(SRCS
                             "gdo.c"
                             "gdo_utils.c"
+                            "secplus.c"
                        INCLUDE_DIRS
                             "include"
                        REQUIRES

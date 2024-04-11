@@ -19,6 +19,9 @@
 #include "gdo_priv.h"
 #include <string.h>
 
+#define __STDC_FORMAT_MACROS 1
+#include <inttypes.h>
+
 
 /***************************** LOCAL FUNCTION DECLARATIONS ****************************/
 static void obst_isr_handler(void* arg);

@@ -15,4 +15,5 @@ Garage door opener library for controlling security+ version 1.0 and 2.0 garage 
 At this point it should have successfully built the project and the output will be in the build folder inside the project folder.
 To extract the library, navigate to `build/esp-idf/gdolib` and copy the `libgdolib.a` file to another project folder where you want it to be statically linked.
 
-
+## Credits:
+This library incorporates secplus by Clayton Smith https://github.com/argilo/secplus
