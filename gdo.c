@@ -1146,6 +1146,9 @@ static void decode_packet(uint8_t *packet) {
         update_paired_devices(nibble, byte2);
     } else if (cmd == GDO_CMD_BATTERY_STATUS) {
         update_battery_state(byte1);
+    } else if ((g_status.door == GDO_DOOR_STATE_OPEN || g_status.door == GDO_DOOR_STATE_CLOSING) && cmd == GDO_CMD_OBST_1) {
+        g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
+        queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
     } else {
         ESP_LOGW(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
     }
