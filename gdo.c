@@ -89,7 +89,6 @@ static gdo_status_t g_status = {
 };
 
 static bool g_protocol_forced;
-static bool g_door_toggled_open;
 static gdo_config_t g_config;
 static uint32_t g_door_start_moving_ms;
 static TaskHandle_t gdo_main_task_handle;
@@ -1133,9 +1132,6 @@ static void decode_packet(uint8_t *packet) {
     } else if (cmd == GDO_CMD_DOOR_ACTION) {
         update_button_state((gdo_button_state_t)((byte1 & 1) == 1) ?
                              GDO_BUTTON_STATE_PRESSED : GDO_BUTTON_STATE_RELEASED);
-        if (g_status.door == GDO_DOOR_STATE_CLOSED && nibble == GDO_DOOR_ACTION_TOGGLE) {
-            g_door_toggled_open = true;
-        }
     } else if (cmd == GDO_CMD_MOTION) {
         update_motion_state(GDO_MOTION_STATE_DETECTED);
     } else if (cmd == GDO_CMD_OPENINGS) {
@@ -1504,12 +1500,6 @@ inline static esp_err_t send_door_action(gdo_door_action_t action) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_DOOR_PRESS, 500000);
     } else {
         err = queue_command(GDO_CMD_DOOR_ACTION, action, 1, 1);
-        // if the door was opened by the toggle command we need to send the close action twice to close.
-        if (err == ESP_OK && g_door_toggled_open) {
-            g_door_toggled_open = false;
-            err = queue_command(GDO_CMD_DOOR_ACTION, action, 1, 1);
-        }
-
         if (err == ESP_OK) {
             --g_status.rolling_code; // only increment after the second command
             err = queue_command(GDO_CMD_DOOR_ACTION, action, 0, 1);
@@ -1640,6 +1630,10 @@ inline static void update_motor_state(gdo_motor_state_t motor_state) {
 */
 inline static void update_button_state(gdo_button_state_t button_state) {
     ESP_LOGD(TAG, "Button state: %s", gdo_button_state_str[button_state]);
+    if (button_state == GDO_BUTTON_STATE_RELEASED) {
+        get_status();
+    }
+
     if (button_state != g_status.button) {
         g_status.button = button_state;
         queue_event((gdo_event_t){GDO_EVENT_BUTTON_UPDATE});
