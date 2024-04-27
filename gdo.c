@@ -254,7 +254,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg) {
  * @brief Gets the current status of the GDO.
  * @param status a pointer to the status structure to be filled.
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if status is NULL.
- * @note This function is perfomred in a critical section and should be called with caution.
+ * @note This function is performed in a critical section and should be called with caution.
 */
 esp_err_t gdo_get_status(gdo_status_t *status) {
     if (!status) {
@@ -1657,7 +1657,7 @@ inline static void update_motion_state(gdo_motion_state_t motion_state) {
         queue_event((gdo_event_t){GDO_EVENT_MOTION_UPDATE});
     }
 
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && g_status.light == GDO_LIGHT_STATE_OFF) {
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
         get_status();
     }
 }
