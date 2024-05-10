@@ -718,7 +718,7 @@ static void gdo_sync_task(void* arg) {
     xQueueReset(gdo_event_queue);
 
     for (;;) {
-        if ((esp_timer_get_time() / 1000) - start_ms > 30000) {
+        if ((esp_timer_get_time() / 1000) - start_ms > 5000) {
             synced = false;
             break;
         }
