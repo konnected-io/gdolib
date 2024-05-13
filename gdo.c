@@ -718,48 +718,36 @@ static void gdo_sync_task(void* arg) {
     xQueueReset(gdo_event_queue);
 
     for (;;) {
-        if ((esp_timer_get_time() / 1000) - start_ms > 30000) {
+        if ((esp_timer_get_time() / 1000) - start_ms > 5000) {
             synced = false;
             break;
         }
 
+        if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+            ESP_LOGV(TAG, "SYNC TASK: Getting status");
+            get_status();
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
+
+        get_openings();
         vTaskDelay(pdMS_TO_TICKS(250));
 
-        if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
-            ESP_LOGI(TAG, "SYNC TASK: Getting status");
-            get_status();
-            continue;
-        }
-        if (g_status.openings == 0) {
-            ESP_LOGI(TAG, "SYNC TASK: Getting openings");
-            get_openings();
-            continue;
-        }
-        if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
-            ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
-            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
-            continue;
-        }
-        if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
-            ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
-            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
-            continue;
-        }
-        if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
-            ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
-            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
-            continue;
-        }
-        if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
-            ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
-            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
-            continue;
-        }
-        if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
-            ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
-            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
-            continue;
-        }
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
+        vTaskDelay(pdMS_TO_TICKS(250));
+
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
+        vTaskDelay(pdMS_TO_TICKS(250));
+
+
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
+        vTaskDelay(pdMS_TO_TICKS(250));
+
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
+        vTaskDelay(pdMS_TO_TICKS(250));
+
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
+        vTaskDelay(pdMS_TO_TICKS(250));
 
         break;
     }
