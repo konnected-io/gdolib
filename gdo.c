@@ -707,6 +707,8 @@ static void gdo_sync_task(void* arg) {
             } else {
                 goto done;
             }
+        } else {
+            goto done;
         }
     }
 
@@ -738,7 +740,6 @@ static void gdo_sync_task(void* arg) {
 
         get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
         vTaskDelay(pdMS_TO_TICKS(250));
-
 
         get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
         vTaskDelay(pdMS_TO_TICKS(250));
