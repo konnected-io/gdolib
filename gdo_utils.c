@@ -107,7 +107,7 @@ const char *gdo_door_action_str[] = {
 };
 
 const char *gdo_protocol_type_str[] = {
-    "Unknown"
+    "Unknown",
     "Security+ 1.0",
     "Security+ 2.0",
 };
