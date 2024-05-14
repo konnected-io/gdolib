@@ -200,13 +200,15 @@ const char* v1_cmd_to_string(gdo_v1_command_t cmd) {
 
 void print_buffer(gdo_protocol_type_t protocol, uint8_t* buf, bool is_tx) {
     if (protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
-        ESP_LOGI(TAG, "%s: "
+        ESP_LOGD(TAG, "%s: "
                  "[%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X]",
                  is_tx ? "TX" : "RX",
                  buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9],
                  buf[10], buf[11], buf[12],buf[13], buf[14], buf[15], buf[16], buf[17], buf[18]);
+    } else if (is_tx) {
+        ESP_LOGD(TAG, "TX [%02X]", buf[0]);
     } else {
-        ESP_LOGI(TAG, "%s [%02X %02X]", is_tx ? "TX" : "RX", buf[0], buf[1]);
+        ESP_LOGD(TAG, "RX [%02X %02X]", buf[0], buf[1]);
     }
 }
 
