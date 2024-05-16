@@ -218,6 +218,90 @@ esp_err_t gdo_init(const gdo_config_t *config) {
 }
 
 /**
+ * @brief Stops and deletes the GDO driver and resets all state values to defaults.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the driver is not initialized.
+*/
+esp_err_t gdo_deinit(void) {
+    esp_err_t err = ESP_OK;
+    if (!gdo_tx_queue) { // using this as a proxy for the driver being initialized
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (gdo_main_task_handle) {
+        vTaskDelete(gdo_main_task_handle);
+        gdo_main_task_handle = NULL;
+    }
+
+    if (gdo_sync_task_handle) {
+        vTaskDelete(gdo_sync_task_handle);
+        gdo_sync_task_handle = NULL;
+    }
+
+    if (gdo_tx_queue) {
+        vQueueDelete(gdo_tx_queue);
+        gdo_tx_queue = NULL;
+    }
+
+    if (gdo_event_queue) {
+        vQueueDelete(gdo_event_queue);
+        gdo_event_queue = NULL;
+    }
+
+    if (motion_detect_timer) {
+        esp_timer_delete(motion_detect_timer);
+        motion_detect_timer = NULL;
+    }
+
+    if (door_position_sync_timer) {
+        esp_timer_delete(door_position_sync_timer);
+        door_position_sync_timer = NULL;
+    }
+
+    if (obst_timer) {
+        esp_timer_delete(obst_timer);
+        obst_timer = NULL;
+    }
+
+    g_protocol_forced = false;
+    g_status.synced = false;
+    g_status.protocol = 0;
+    g_status.door = GDO_DOOR_STATE_UNKNOWN;
+    g_status.light = GDO_LIGHT_STATE_MAX;
+    g_status.lock = GDO_LOCK_STATE_MAX;
+    g_status.motion = GDO_MOTION_STATE_MAX;
+    g_status.motor = GDO_MOTOR_STATE_MAX;
+    g_status.button = GDO_BUTTON_STATE_MAX;
+    g_status.battery = GDO_BATT_STATE_UNKNOWN;
+    g_status.learn = GDO_LEARN_STATE_MAX;
+    g_status.paired_devices.total_remotes = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
+    g_status.paired_devices.total_keypads = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
+    g_status.paired_devices.total_wall_controls = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
+    g_status.paired_devices.total_accessories = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
+    g_status.paired_devices.total_all = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
+    g_status.openings = 0;
+    g_status.ttc_seconds = 0;
+    g_status.open_ms = 0;
+    g_status.close_ms = 0;
+    g_status.door_position = -1;
+    g_status.door_target = -1;
+
+    err = gpio_reset_pin(g_config.uart_tx_pin);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    err = gpio_reset_pin(g_config.uart_rx_pin);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    err = uart_driver_delete(g_config.uart_num);
+
+done:
+    return err;
+}
+
+/**
  * @brief Starts the GDO driver and the UART.
  * @param event_callback The callback function to be called when an event occurs.
  * @param user_arg optional user argument to be passed to the callback.

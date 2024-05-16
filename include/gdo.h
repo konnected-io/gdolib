@@ -176,6 +176,12 @@ typedef void (*gdo_event_callback_t)(const gdo_status_t *status, gdo_cb_event_t 
 esp_err_t gdo_init(const gdo_config_t *config);
 
 /**
+ * @brief Stops and deletes the GDO driver and resets all state values to defaults.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the driver is not initialized.
+*/
+esp_err_t gdo_deinit(void);
+
+/**
  * @brief Starts the GDO driver and the UART.
  * @param event_callback The callback function to be called when an event occurs.
  * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, other non-zero errors.
