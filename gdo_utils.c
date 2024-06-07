@@ -110,6 +110,7 @@ const char *gdo_protocol_type_str[] = {
     "Unknown",
     "Security+ 1.0",
     "Security+ 2.0",
+    "Security+ 1.0 with smart panel",
 };
 
 const char* cmd_to_string(gdo_command_t cmd) {

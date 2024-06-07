@@ -491,7 +491,7 @@ esp_err_t gdo_light_on(void) {
         return err;
     }
 
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
     } else {
         err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_ON, 0, 0);
@@ -514,7 +514,7 @@ esp_err_t gdo_light_off(void) {
         return err;
     }
 
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
     } else {
         err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_OFF, 0, 0);
@@ -550,7 +550,7 @@ esp_err_t gdo_lock(void) {
         return ESP_OK;
     }
 
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS, 500000);
     } else {
         return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_LOCK, 0, 0);
@@ -566,7 +566,7 @@ esp_err_t gdo_unlock(void) {
         return ESP_OK;
     }
 
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS, 500000);
     } else {
         return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_UNLOCK, 0, 0);
@@ -773,12 +773,14 @@ esp_err_t gdo_set_min_command_interval(uint32_t ms) {
 static void gdo_sync_task(void* arg) {
     bool synced = true;
 
-    if (g_status.protocol <= GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2) {
         uart_set_baudrate(g_config.uart_num, 1200);
         uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
         uart_flush(g_config.uart_num);
         xQueueReset(gdo_event_queue);
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2500));
+
+        // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
+        ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
 
         if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
             ESP_LOGW(TAG, "V1 panel not found, trying emulation");
@@ -810,6 +812,8 @@ static void gdo_sync_task(void* arg) {
                 goto done;
             }
         } else {
+            ESP_LOGI(TAG, "V1 panel found");
+            g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL;
             goto done;
         }
     }
@@ -1404,7 +1408,7 @@ static void gdo_main_task(void* arg) {
                         }
                         --rx_pending;
                     }
-                } else if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+                } else if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
                     if (rx_packet_size != GDO_PACKET_SIZE) {
                         ESP_LOGE(TAG, "RX data size error: %u", rx_packet_size);
                         uart_read_bytes(g_config.uart_num, rx_buffer, rx_packet_size, 0);
@@ -1422,7 +1426,7 @@ static void gdo_main_task(void* arg) {
                 break;
             }
             case UART_PARITY_ERR:
-                if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+                if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
                     ESP_LOGE(TAG, "Parity error, check wiring?");
                 }
                 break;
@@ -1553,12 +1557,6 @@ static void update_door_state(const gdo_door_state_t door_state) {
     if (door_state > GDO_DOOR_STATE_UNKNOWN && door_state < GDO_DOOR_STATE_MAX) {
         esp_timer_stop(door_position_sync_timer);
     } else {
-        // If we are still detecting the protcol and we get here but the door state is not valid, reset the protocol.
-        if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1 &&
-            g_status.door == GDO_DOOR_STATE_UNKNOWN &&
-            gdo_sync_task_handle) {
-            g_status.protocol = 0;
-        }
         return;
     }
 
@@ -1622,7 +1620,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
     }
 
     if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
-        g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1 &&
+        g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1 &&
         gdo_sync_task_handle) {
         xTaskNotifyGive(gdo_sync_task_handle);
     }
@@ -1675,7 +1673,7 @@ inline static esp_err_t get_openings() {
 */
 inline static esp_err_t send_door_action(gdo_door_action_t action) {
     esp_err_t err = ESP_OK;
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1) {
+    if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_DOOR_PRESS, 500000);
     } else {
         err = queue_command(GDO_CMD_DOOR_ACTION, action, 1, 1);
