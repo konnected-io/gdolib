@@ -96,6 +96,7 @@ typedef enum {
 typedef enum {
     GDO_PROTOCOL_SEC_PLUS_V1 = 1,
     GDO_PROTOCOL_SEC_PLUS_V2,
+    GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL,
     GDO_PROTOCOL_MAX,
 } gdo_protocol_type_t;
 
@@ -402,6 +403,13 @@ esp_err_t gdo_set_open_duration(uint16_t ms);
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
 */
 esp_err_t gdo_set_close_duration(uint16_t ms);
+
+/**
+ * @brief Sets the minimum time in milliseconds to wait between sending consecutive commands.
+ * @param ms The minimum time in milliseconds.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the time is invalid.
+*/
+esp_err_t gdo_set_min_command_interval(uint32_t ms);
 
 #ifdef __cplusplus
 }

@@ -144,6 +144,11 @@ typedef struct {
     esp_timer_handle_t timer;
 } gdo_sched_cmd_args_t;
 
+typedef struct {
+    gdo_event_type_t event;
+    esp_timer_handle_t timer;
+} gdo_sched_evt_args_t;
+
 typedef union {
     gdo_event_type_t gdo_event;
     uart_event_t uart_event;
