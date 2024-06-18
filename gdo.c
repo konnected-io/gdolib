@@ -1452,6 +1452,13 @@ static void gdo_main_task(void* arg) {
                 }
 
                 if (rx_pending || gpio_get_level(g_config.uart_rx_pin)) {
+                    // If not synced yet just delete the message as the sync loop will resend it
+                    if (!g_status.synced) {
+                        xQueueReceive(gdo_tx_queue, &tx_message, 0);
+                        free(tx_message.packet);
+                        break;
+                    }
+
                     ESP_LOGW(TAG, "Collision detected, requeing command");
                     // Wait 150ms for the collision to clear
                     if (schedule_event(GDO_EVENT_TX_PENDING, 150 * 1000) != ESP_OK) {
