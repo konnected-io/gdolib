@@ -1426,9 +1426,8 @@ static void gdo_main_task(void* arg) {
                 break;
             }
             case UART_PARITY_ERR:
-                if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-                    ESP_LOGE(TAG, "Parity error, check wiring?");
-                }
+                ESP_LOGE(TAG, "Parity error, check wiring?");
+                uart_flush_input(g_config.uart_num);
                 break;
             case UART_BUFFER_FULL:
                 ESP_LOGE(TAG, "RX buffer full, flushing.");
