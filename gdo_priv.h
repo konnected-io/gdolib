@@ -63,6 +63,7 @@ typedef enum {
 } gdo_command_t;
 
 typedef enum {
+    V1_CMD_MIN = 0x2F,
     V1_CMD_TOGGLE_DOOR_PRESS = 0x30,
     V1_CMD_TOGGLE_DOOR_RELEASE = 0x31,
     V1_CMD_TOGGLE_LIGHT_PRESS = 0x32,
@@ -73,7 +74,7 @@ typedef enum {
     V1_CMD_QUERY_DOOR_STATUS = 0x38,
     V1_CMD_OBSTRUCTION = 0x39,
     V1_CMD_QUERY_OTHER_STATUS = 0x3A,
-    V1_CMD_MAX = 0xFF,
+    V1_CMD_MAX = 0x3B,
 } gdo_v1_command_t;
 
 typedef enum {

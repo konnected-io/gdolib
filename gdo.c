@@ -1322,7 +1322,8 @@ static void decode_packet(uint8_t *packet) {
  * @brief Main task that handles all the events from the UART and other tasks.
 */
 static void gdo_main_task(void* arg) {
-    uint8_t rx_buffer[GDO_PACKET_SIZE];
+    uint8_t rx_buffer[RX_BUFFER_SIZE * 2]; // double the size to prevent overflow
+    uint16_t rx_buf_index = 0;
     uint8_t rx_pending = 0;
     gdo_tx_message_t tx_message = {};
     gdo_event_t event = {};
@@ -1409,17 +1410,43 @@ static void gdo_main_task(void* arg) {
                         --rx_pending;
                     }
                 } else if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-                    if (rx_packet_size != GDO_PACKET_SIZE) {
-                        ESP_LOGE(TAG, "RX data size error: %u", rx_packet_size);
-                        uart_read_bytes(g_config.uart_num, rx_buffer, rx_packet_size, 0);
+                    ESP_LOGI(TAG, "RX Secplus V1 data packet; %u bytes", rx_packet_size);
+                    int bytes_read = uart_read_bytes(g_config.uart_num, rx_buffer + rx_buf_index, rx_packet_size, 0);
+                    if (bytes_read < 0) {
+                        ESP_LOGE(TAG, "RX buffer read error");
+                        rx_buf_index = 0;
                         break;
                     }
 
-                    if (uart_read_bytes(g_config.uart_num, rx_buffer, GDO_PACKET_SIZE, 0) == 2) {
-                        print_buffer(g_status.protocol, rx_buffer, false);
-                        decode_v1_packet(rx_buffer);
-                    } else {
-                        ESP_LOGE(TAG, "RX buffer read error");
+                    rx_buf_index += bytes_read;
+
+                    if (rx_buf_index >= GDO_PACKET_SIZE) {
+                        uint8_t i = 0;
+                        bool odd = rx_buf_index % 2 != 0;
+                        if (odd) {
+                            if (rx_buffer[0] <= V1_CMD_MIN || rx_buffer[0] >= V1_CMD_MAX) {
+                                i = 1; // Skip first byte if it's not a valid command
+                            } else {
+                                // Decrement the buffer index so we don't over read the buffer in the loop
+                                --rx_buf_index;
+                            }
+                        }
+
+                        uint8_t pkt[2];
+                        for (; i < rx_buf_index; i += 2) {
+                            pkt[0] = rx_buffer[i];
+                            pkt[1] = rx_buffer[i + 1];
+                            print_buffer(g_status.protocol, pkt, false);
+                            decode_v1_packet(pkt);
+                        }
+
+                        // if we decremented the buffer index then we need to move the last byte to the start
+                        if (odd && rx_buf_index % 2 == 0) {
+                            rx_buffer[0] = rx_buffer[rx_buf_index];
+                            rx_buf_index = 1;
+                        } else {
+                            rx_buf_index = 0;
+                        }
                     }
                 }
 
