@@ -1410,7 +1410,7 @@ static void gdo_main_task(void* arg) {
                         --rx_pending;
                     }
                 } else if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-                    ESP_LOGI(TAG, "RX Secplus V1 data packet; %u bytes", rx_packet_size);
+                    //ESP_LOGI(TAG, "RX Secplus V1 data packet; %u bytes", rx_packet_size);
                     int bytes_read = uart_read_bytes(g_config.uart_num, rx_buffer + rx_buf_index, rx_packet_size, 0);
                     if (bytes_read < 0) {
                         ESP_LOGE(TAG, "RX buffer read error");
@@ -1455,15 +1455,18 @@ static void gdo_main_task(void* arg) {
             case UART_PARITY_ERR:
                 ESP_LOGE(TAG, "Parity error, check wiring?");
                 uart_flush_input(g_config.uart_num);
+                rx_buf_index = 0;
                 break;
             case UART_BUFFER_FULL:
                 ESP_LOGE(TAG, "RX buffer full, flushing.");
                 uart_flush_input(g_config.uart_num);
                 xQueueReset(gdo_event_queue);
+                rx_buf_index = 0;
                 break;
             case UART_FIFO_OVF:
                 ESP_LOGE(TAG, "RX FIFO overflow, flushing.");
                 uart_flush_input(g_config.uart_num);
+                rx_buf_index = 0;
                 xQueueReset(gdo_event_queue);
                 break;
             case GDO_EVENT_TX_PENDING: {
