@@ -1590,16 +1590,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
     static int64_t start_opening;
     static int64_t start_closing;
 
-    if (door_state > GDO_DOOR_STATE_UNKNOWN && door_state < GDO_DOOR_STATE_MAX) {
-        esp_timer_stop(door_position_sync_timer);
-    } else {
-        return;
-    }
-
     ESP_LOGD(TAG, "Door state: %s", gdo_door_state_str[door_state]);
-    if (door_state == g_status.door) {
-        return;
-    }
 
     if (!g_status.open_ms) {
         if (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSED) {
@@ -1637,6 +1628,8 @@ static void update_door_state(const gdo_door_state_t door_state) {
             }
         }
     } else {
+        esp_timer_stop(door_position_sync_timer);
+
         if (door_state == GDO_DOOR_STATE_STOPPED) {
             int delta = g_status.door_position - g_status.door_target;
             if (delta < -5000 || delta > 5000) {
