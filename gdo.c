@@ -1728,10 +1728,8 @@ inline static esp_err_t send_door_action(gdo_door_action_t action) {
 */
 inline static void update_light_state(gdo_light_state_t light_state) {
     ESP_LOGD(TAG, "Light state: %s", gdo_light_state_str[light_state]);
-    if (light_state != g_status.light) {
-        g_status.light = light_state;
-        queue_event((gdo_event_t){GDO_EVENT_LIGHT_UPDATE});
-    }
+    g_status.light = light_state;
+    queue_event((gdo_event_t){GDO_EVENT_LIGHT_UPDATE});
 }
 
 /**
@@ -1740,10 +1738,8 @@ inline static void update_light_state(gdo_light_state_t light_state) {
 */
 inline static void update_lock_state(gdo_lock_state_t lock_state) {
     ESP_LOGD(TAG, "Lock state: %s", gdo_lock_state_str[lock_state]);
-    if (lock_state != g_status.lock) {
-        g_status.lock = lock_state;
-        queue_event((gdo_event_t){GDO_EVENT_LOCK_UPDATE});
-    }
+    g_status.lock = lock_state;
+    queue_event((gdo_event_t){GDO_EVENT_LOCK_UPDATE});
 }
 
 /**
@@ -1765,12 +1761,10 @@ inline static void update_obstruction_state(gdo_obstruction_state_t obstruction_
 */
 inline static void update_learn_state(gdo_learn_state_t learn_state) {
     ESP_LOGD(TAG, "Learn state: %s", gdo_learn_state_str[learn_state]);
-    if (learn_state != g_status.learn) {
-        g_status.learn = learn_state;
-        queue_event((gdo_event_t){GDO_EVENT_LEARN_UPDATE});
-        if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
-            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
-        }
+    g_status.learn = learn_state;
+    queue_event((gdo_event_t){GDO_EVENT_LEARN_UPDATE});
+    if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
     }
 }
 
