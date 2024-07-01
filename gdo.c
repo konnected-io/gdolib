@@ -1254,7 +1254,7 @@ static void decode_v1_packet(uint8_t *packet) {
     } else if (cmd == V1_CMD_TOGGLE_DOOR_RELEASE ) {
         update_button_state(GDO_BUTTON_STATE_RELEASED);
     } else {
-        ESP_LOGW(TAG, "Unhandled command: %02x, resp: %02x", cmd, resp);
+        ESP_LOGD(TAG, "Unhandled command: %02x, resp: %02x", cmd, resp);
     }
 }
 
@@ -1314,7 +1314,7 @@ static void decode_packet(uint8_t *packet) {
         g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
         queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
     } else {
-        ESP_LOGW(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
+        ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
     }
 }
 
@@ -1410,7 +1410,7 @@ static void gdo_main_task(void* arg) {
                         --rx_pending;
                     }
                 } else if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-                    //ESP_LOGI(TAG, "RX Secplus V1 data packet; %u bytes", rx_packet_size);
+                    ESP_LOGV(TAG, "RX Secplus V1 data packet; %u bytes", rx_packet_size);
                     int bytes_read = uart_read_bytes(g_config.uart_num, rx_buffer + rx_buf_index, rx_packet_size, 0);
                     if (bytes_read < 0) {
                         ESP_LOGE(TAG, "RX buffer read error");
@@ -1453,7 +1453,7 @@ static void gdo_main_task(void* arg) {
                 break;
             }
             case UART_PARITY_ERR:
-                ESP_LOGE(TAG, "Parity error, check wiring?");
+                ESP_LOGD(TAG, "Parity error, check wiring?");
                 uart_flush_input(g_config.uart_num);
                 rx_buf_index = 0;
                 break;
@@ -1472,7 +1472,7 @@ static void gdo_main_task(void* arg) {
             case GDO_EVENT_TX_PENDING: {
                 uint32_t now = esp_timer_get_time() / 1000;
                 if (now - last_tx_time < g_tx_delay_ms) {
-                    ESP_LOGW(TAG, "TX pending, waiting, %" PRIu32 "ms since last TX", now - last_tx_time);
+                    ESP_LOGD(TAG, "TX pending, waiting, %" PRIu32 "ms since last TX", now - last_tx_time);
                     err = schedule_event(GDO_EVENT_TX_PENDING,(g_tx_delay_ms - (now - last_tx_time)) * 1000);
                     if (err != ESP_OK) {
                         ESP_LOGE(TAG, "Failed to schedule TX pending event, %s", esp_err_to_name(err));
@@ -1488,7 +1488,7 @@ static void gdo_main_task(void* arg) {
                         break;
                     }
 
-                    ESP_LOGW(TAG, "Collision detected, requeing command");
+                    ESP_LOGD(TAG, "Collision detected, requeuing command");
                     // Wait 150ms for the collision to clear
                     if (schedule_event(GDO_EVENT_TX_PENDING, 150 * 1000) != ESP_OK) {
                         ESP_LOGE(TAG, "Failed to requeue command");
@@ -1518,7 +1518,7 @@ static void gdo_main_task(void* arg) {
                              cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd), esp_err_to_name(err));
                     // TODO: send message to app about the failure
                 } else {
-                    ESP_LOGW(TAG, "Sent command: %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ?
+                    ESP_LOGD(TAG, "Sent command: %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ?
                              cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd));
                     last_tx_time = esp_timer_get_time() / 1000;
                 }
@@ -1571,7 +1571,7 @@ static void gdo_main_task(void* arg) {
                 cb_event = GDO_CB_EVENT_CLOSE_DURATION_MEASURMENT;
                 break;
             default:
-                ESP_LOGE(TAG, "Unhandled gdo event: %d", event.gdo_event);
+                ESP_LOGD(TAG, "Unhandled gdo event: %d", event.gdo_event);
                 break;
             }
 
