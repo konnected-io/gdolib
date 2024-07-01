@@ -1243,12 +1243,6 @@ static void decode_v1_packet(uint8_t *packet) {
         update_lock_state((gdo_lock_state_t)((~resp >> 3) & 1));
     } else if (cmd == V1_CMD_OBSTRUCTION) {
         update_obstruction_state(resp == 0 ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
-    } else if (cmd == V1_CMD_TOGGLE_LIGHT_PRESS) {
-        // motion was detected, or the light toggle button was pressed
-        // either way it's ok to trigger motion detection
-        if (g_status.light == GDO_LIGHT_STATE_OFF) {
-            update_motion_state(GDO_MOTION_STATE_DETECTED);
-        }
     } else if (cmd == V1_CMD_TOGGLE_DOOR_PRESS) {
         update_button_state(GDO_BUTTON_STATE_PRESSED);
     } else if (cmd == V1_CMD_TOGGLE_DOOR_RELEASE ) {
