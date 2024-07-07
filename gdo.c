@@ -1309,7 +1309,7 @@ static void decode_packet(uint8_t *packet) {
         update_door_state((gdo_door_state_t)nibble);
         update_light_state((gdo_light_state_t)((byte2 >> 1) & 1));
         update_lock_state((gdo_lock_state_t)(byte2 & 1));
-        update_learn_state((gdo_learn_state_t)((byte1 >> 5) & 1));
+        update_learn_state((gdo_learn_state_t)((byte2 >> 5) & 1));
         if (g_config.obst_from_status) {
             update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
         }
