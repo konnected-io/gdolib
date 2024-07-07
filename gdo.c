@@ -818,7 +818,8 @@ static void gdo_sync_task(void* arg) {
         }
     }
 
-    uint32_t start_ms = esp_timer_get_time() / 1000;
+    uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
+    uint8_t sync_stage = 0;
     g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
     uart_set_baudrate(g_config.uart_num, 9600);
     uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
@@ -826,7 +827,7 @@ static void gdo_sync_task(void* arg) {
     xQueueReset(gdo_event_queue);
 
     for (;;) {
-        if ((esp_timer_get_time() / 1000) - start_ms > 5000) {
+        if ((esp_timer_get_time() / 1000) > timeout) {
             synced = false;
             break;
         }
@@ -837,32 +838,56 @@ static void gdo_sync_task(void* arg) {
             ESP_LOGV(TAG, "SYNC TASK: Getting status");
             get_status();
             continue;
+        } else if (sync_stage < 1) {
+            sync_stage = 1;
+            timeout += 1000;
         }
+
         if (g_status.openings == 0) {
             ESP_LOGI(TAG, "SYNC TASK: Getting openings");
             get_openings();
             continue;
+        } else if (sync_stage < 2) {
+            sync_stage = 2;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
             continue;
+        } else if (sync_stage < 3) {
+            sync_stage = 3;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
             continue;
+        } else if (sync_stage < 4) {
+            sync_stage = 4;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
             continue;
+        } else if (sync_stage < 5) {
+            sync_stage = 5;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
             continue;
+        } else if (sync_stage < 6) {
+            sync_stage = 6;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
