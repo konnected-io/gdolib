@@ -894,6 +894,7 @@ static void gdo_sync_task(void* arg) {
             continue;
         }
 
+        queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
         break;
     }
 
@@ -1687,15 +1688,7 @@ static void get_paired_devices(gdo_paired_device_type_t type) {
         return;
     }
 
-    if (type == GDO_PAIRED_DEVICE_TYPE_ALL) {
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_ALL, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_REMOTE, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_KEYPAD, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_ACCESSORY, 0, 0);
-    } else {
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, type, 0, 0);
-    }
+    queue_command(GDO_CMD_GET_PAIRED_DEVICES, type, 0, 0);
 }
 
 /************************************ INLINE UTILITIES **********************************/
@@ -1934,7 +1927,7 @@ inline static void update_paired_devices(gdo_paired_device_type_t type, uint8_t 
         g_status.paired_devices.total_accessories = count;
     }
 
-    if (changed) {
+    if (g_status.synced && changed) {
         queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
     }
 }
