@@ -56,7 +56,7 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
 static esp_err_t queue_v1_command(gdo_v1_command_t command);
 static esp_err_t schedule_command(gdo_sched_cmd_args_t *cmd_args, uint32_t time_us);
 static esp_err_t schedule_event(gdo_event_type_t event, uint32_t time_us);
-static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd, uint32_t time_us);
+static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd);
 static esp_err_t queue_event(gdo_event_t event);
 
 
@@ -492,7 +492,7 @@ esp_err_t gdo_light_on(void) {
     }
 
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
+        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS);
     } else {
         err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_ON, 0, 0);
         if (err == ESP_OK) {
@@ -515,7 +515,7 @@ esp_err_t gdo_light_off(void) {
     }
 
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS, 500000);
+        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS);
     } else {
         err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_OFF, 0, 0);
         if (err == ESP_OK) {
@@ -551,7 +551,7 @@ esp_err_t gdo_lock(void) {
     }
 
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS, 500000);
+        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS);
     } else {
         return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_LOCK, 0, 0);
     }
@@ -567,7 +567,7 @@ esp_err_t gdo_unlock(void) {
     }
 
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS, 500000);
+        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS);
     } else {
         return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_UNLOCK, 0, 0);
     }
@@ -818,7 +818,8 @@ static void gdo_sync_task(void* arg) {
         }
     }
 
-    uint32_t start_ms = esp_timer_get_time() / 1000;
+    uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
+    uint8_t sync_stage = 0;
     g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
     uart_set_baudrate(g_config.uart_num, 9600);
     uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
@@ -826,7 +827,7 @@ static void gdo_sync_task(void* arg) {
     xQueueReset(gdo_event_queue);
 
     for (;;) {
-        if ((esp_timer_get_time() / 1000) - start_ms > 5000) {
+        if ((esp_timer_get_time() / 1000) > timeout) {
             synced = false;
             break;
         }
@@ -837,38 +838,63 @@ static void gdo_sync_task(void* arg) {
             ESP_LOGV(TAG, "SYNC TASK: Getting status");
             get_status();
             continue;
+        } else if (sync_stage < 1) {
+            sync_stage = 1;
+            timeout += 1000;
         }
+
         if (g_status.openings == 0) {
             ESP_LOGI(TAG, "SYNC TASK: Getting openings");
             get_openings();
             continue;
+        } else if (sync_stage < 2) {
+            sync_stage = 2;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
             continue;
+        } else if (sync_stage < 3) {
+            sync_stage = 3;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
             continue;
+        } else if (sync_stage < 4) {
+            sync_stage = 4;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
             continue;
+        } else if (sync_stage < 5) {
+            sync_stage = 5;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
             continue;
+        } else if (sync_stage < 6) {
+            sync_stage = 6;
+            timeout += 1000;
         }
+
         if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
             ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
             continue;
         }
 
+        queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
         break;
     }
 
@@ -1090,14 +1116,14 @@ static esp_err_t schedule_event(gdo_event_type_t event, uint32_t time_us) {
  * @param time_us The time in microseconds to send the command, must be more than 50 microseconds.
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full.
 */
-static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd, uint32_t time_us) {
+static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd) {
     esp_err_t err = queue_v1_command(cmd);
     if (err == ESP_OK) {
         gdo_sched_cmd_args_t args = {
             .cmd = (uint32_t)cmd + 1, // release is always 1 higher than press
             .door_cmd = false,
         };
-        return schedule_command(&args, time_us);
+        return schedule_command(&args, g_tx_delay_ms * 1000);
     }
 
     return err;
@@ -1243,18 +1269,12 @@ static void decode_v1_packet(uint8_t *packet) {
         update_lock_state((gdo_lock_state_t)((~resp >> 3) & 1));
     } else if (cmd == V1_CMD_OBSTRUCTION) {
         update_obstruction_state(resp == 0 ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
-    } else if (cmd == V1_CMD_TOGGLE_LIGHT_PRESS) {
-        // motion was detected, or the light toggle button was pressed
-        // either way it's ok to trigger motion detection
-        if (g_status.light == GDO_LIGHT_STATE_OFF) {
-            update_motion_state(GDO_MOTION_STATE_DETECTED);
-        }
     } else if (cmd == V1_CMD_TOGGLE_DOOR_PRESS) {
         update_button_state(GDO_BUTTON_STATE_PRESSED);
     } else if (cmd == V1_CMD_TOGGLE_DOOR_RELEASE ) {
         update_button_state(GDO_BUTTON_STATE_RELEASED);
     } else {
-        ESP_LOGW(TAG, "Unhandled command: %02x, resp: %02x", cmd, resp);
+        ESP_LOGD(TAG, "Unhandled command: %02x, resp: %02x", cmd, resp);
     }
 }
 
@@ -1289,7 +1309,7 @@ static void decode_packet(uint8_t *packet) {
         update_door_state((gdo_door_state_t)nibble);
         update_light_state((gdo_light_state_t)((byte2 >> 1) & 1));
         update_lock_state((gdo_lock_state_t)(byte2 & 1));
-        update_learn_state((gdo_learn_state_t)((byte1 >> 5) & 1));
+        update_learn_state((gdo_learn_state_t)((byte2 >> 5) & 1));
         if (g_config.obst_from_status) {
             update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
         }
@@ -1314,7 +1334,7 @@ static void decode_packet(uint8_t *packet) {
         g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
         queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
     } else {
-        ESP_LOGW(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
+        ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
     }
 }
 
@@ -1322,7 +1342,8 @@ static void decode_packet(uint8_t *packet) {
  * @brief Main task that handles all the events from the UART and other tasks.
 */
 static void gdo_main_task(void* arg) {
-    uint8_t rx_buffer[GDO_PACKET_SIZE];
+    uint8_t rx_buffer[RX_BUFFER_SIZE * 2]; // double the size to prevent overflow
+    uint16_t rx_buf_index = 0;
     uint8_t rx_pending = 0;
     gdo_tx_message_t tx_message = {};
     gdo_event_t event = {};
@@ -1409,41 +1430,69 @@ static void gdo_main_task(void* arg) {
                         --rx_pending;
                     }
                 } else if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-                    if (rx_packet_size != GDO_PACKET_SIZE) {
-                        ESP_LOGE(TAG, "RX data size error: %u", rx_packet_size);
-                        uart_read_bytes(g_config.uart_num, rx_buffer, rx_packet_size, 0);
+                    ESP_LOGV(TAG, "RX Secplus V1 data packet; %u bytes", rx_packet_size);
+                    int bytes_read = uart_read_bytes(g_config.uart_num, rx_buffer + rx_buf_index, rx_packet_size, 0);
+                    if (bytes_read < 0) {
+                        ESP_LOGE(TAG, "RX buffer read error");
+                        rx_buf_index = 0;
                         break;
                     }
 
-                    if (uart_read_bytes(g_config.uart_num, rx_buffer, GDO_PACKET_SIZE, 0) == 2) {
-                        print_buffer(g_status.protocol, rx_buffer, false);
-                        decode_v1_packet(rx_buffer);
-                    } else {
-                        ESP_LOGE(TAG, "RX buffer read error");
+                    rx_buf_index += bytes_read;
+
+                    if (rx_buf_index >= GDO_PACKET_SIZE) {
+                        uint8_t i = 0;
+                        bool odd = rx_buf_index % 2 != 0;
+                        if (odd) {
+                            if (rx_buffer[0] <= V1_CMD_MIN || rx_buffer[0] >= V1_CMD_MAX) {
+                                i = 1; // Skip first byte if it's not a valid command
+                            } else {
+                                // Decrement the buffer index so we don't over read the buffer in the loop
+                                --rx_buf_index;
+                            }
+                        }
+
+                        uint8_t pkt[2];
+                        for (; i < rx_buf_index; i += 2) {
+                            pkt[0] = rx_buffer[i];
+                            pkt[1] = rx_buffer[i + 1];
+                            print_buffer(g_status.protocol, pkt, false);
+                            decode_v1_packet(pkt);
+                        }
+
+                        // if we decremented the buffer index then we need to move the last byte to the start
+                        if (odd && rx_buf_index % 2 == 0) {
+                            rx_buffer[0] = rx_buffer[rx_buf_index];
+                            rx_buf_index = 1;
+                        } else {
+                            rx_buf_index = 0;
+                        }
                     }
                 }
 
                 break;
             }
             case UART_PARITY_ERR:
-                if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-                    ESP_LOGE(TAG, "Parity error, check wiring?");
-                }
+                ESP_LOGD(TAG, "Parity error, check wiring?");
+                uart_flush_input(g_config.uart_num);
+                rx_buf_index = 0;
                 break;
             case UART_BUFFER_FULL:
                 ESP_LOGE(TAG, "RX buffer full, flushing.");
                 uart_flush_input(g_config.uart_num);
                 xQueueReset(gdo_event_queue);
+                rx_buf_index = 0;
                 break;
             case UART_FIFO_OVF:
                 ESP_LOGE(TAG, "RX FIFO overflow, flushing.");
                 uart_flush_input(g_config.uart_num);
+                rx_buf_index = 0;
                 xQueueReset(gdo_event_queue);
                 break;
             case GDO_EVENT_TX_PENDING: {
                 uint32_t now = esp_timer_get_time() / 1000;
                 if (now - last_tx_time < g_tx_delay_ms) {
-                    ESP_LOGW(TAG, "TX pending, waiting, %" PRIu32 "ms since last TX", now - last_tx_time);
+                    ESP_LOGD(TAG, "TX pending, waiting, %" PRIu32 "ms since last TX", now - last_tx_time);
                     err = schedule_event(GDO_EVENT_TX_PENDING,(g_tx_delay_ms - (now - last_tx_time)) * 1000);
                     if (err != ESP_OK) {
                         ESP_LOGE(TAG, "Failed to schedule TX pending event, %s", esp_err_to_name(err));
@@ -1459,7 +1508,7 @@ static void gdo_main_task(void* arg) {
                         break;
                     }
 
-                    ESP_LOGW(TAG, "Collision detected, requeing command");
+                    ESP_LOGD(TAG, "Collision detected, requeuing command");
                     // Wait 150ms for the collision to clear
                     if (schedule_event(GDO_EVENT_TX_PENDING, 150 * 1000) != ESP_OK) {
                         ESP_LOGE(TAG, "Failed to requeue command");
@@ -1489,7 +1538,7 @@ static void gdo_main_task(void* arg) {
                              cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd), esp_err_to_name(err));
                     // TODO: send message to app about the failure
                 } else {
-                    ESP_LOGW(TAG, "Sent command: %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ?
+                    ESP_LOGD(TAG, "Sent command: %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ?
                              cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd));
                     last_tx_time = esp_timer_get_time() / 1000;
                 }
@@ -1542,7 +1591,7 @@ static void gdo_main_task(void* arg) {
                 cb_event = GDO_CB_EVENT_CLOSE_DURATION_MEASURMENT;
                 break;
             default:
-                ESP_LOGE(TAG, "Unhandled gdo event: %d", event.gdo_event);
+                ESP_LOGD(TAG, "Unhandled gdo event: %d", event.gdo_event);
                 break;
             }
 
@@ -1561,16 +1610,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
     static int64_t start_opening;
     static int64_t start_closing;
 
-    if (door_state > GDO_DOOR_STATE_UNKNOWN && door_state < GDO_DOOR_STATE_MAX) {
-        esp_timer_stop(door_position_sync_timer);
-    } else {
-        return;
-    }
-
     ESP_LOGD(TAG, "Door state: %s", gdo_door_state_str[door_state]);
-    if (door_state == g_status.door) {
-        return;
-    }
 
     if (!g_status.open_ms) {
         if (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSED) {
@@ -1608,6 +1648,8 @@ static void update_door_state(const gdo_door_state_t door_state) {
             }
         }
     } else {
+        esp_timer_stop(door_position_sync_timer);
+
         if (door_state == GDO_DOOR_STATE_STOPPED) {
             int delta = g_status.door_position - g_status.door_target;
             if (delta < -5000 || delta > 5000) {
@@ -1646,15 +1688,7 @@ static void get_paired_devices(gdo_paired_device_type_t type) {
         return;
     }
 
-    if (type == GDO_PAIRED_DEVICE_TYPE_ALL) {
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_ALL, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_REMOTE, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_KEYPAD, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL, 0, 0);
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, GDO_PAIRED_DEVICE_TYPE_ACCESSORY, 0, 0);
-    } else {
-        queue_command(GDO_CMD_GET_PAIRED_DEVICES, type, 0, 0);
-    }
+    queue_command(GDO_CMD_GET_PAIRED_DEVICES, type, 0, 0);
 }
 
 /************************************ INLINE UTILITIES **********************************/
@@ -1681,7 +1715,7 @@ inline static esp_err_t get_openings() {
 inline static esp_err_t send_door_action(gdo_door_action_t action) {
     esp_err_t err = ESP_OK;
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
-        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_DOOR_PRESS, 500000);
+        return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_DOOR_PRESS);
     } else {
         err = queue_command(GDO_CMD_DOOR_ACTION, action, 1, 1);
         if (err == ESP_OK) {
@@ -1699,10 +1733,8 @@ inline static esp_err_t send_door_action(gdo_door_action_t action) {
 */
 inline static void update_light_state(gdo_light_state_t light_state) {
     ESP_LOGD(TAG, "Light state: %s", gdo_light_state_str[light_state]);
-    if (light_state != g_status.light) {
-        g_status.light = light_state;
-        queue_event((gdo_event_t){GDO_EVENT_LIGHT_UPDATE});
-    }
+    g_status.light = light_state;
+    queue_event((gdo_event_t){GDO_EVENT_LIGHT_UPDATE});
 }
 
 /**
@@ -1711,10 +1743,8 @@ inline static void update_light_state(gdo_light_state_t light_state) {
 */
 inline static void update_lock_state(gdo_lock_state_t lock_state) {
     ESP_LOGD(TAG, "Lock state: %s", gdo_lock_state_str[lock_state]);
-    if (lock_state != g_status.lock) {
-        g_status.lock = lock_state;
-        queue_event((gdo_event_t){GDO_EVENT_LOCK_UPDATE});
-    }
+    g_status.lock = lock_state;
+    queue_event((gdo_event_t){GDO_EVENT_LOCK_UPDATE});
 }
 
 /**
@@ -1736,12 +1766,10 @@ inline static void update_obstruction_state(gdo_obstruction_state_t obstruction_
 */
 inline static void update_learn_state(gdo_learn_state_t learn_state) {
     ESP_LOGD(TAG, "Learn state: %s", gdo_learn_state_str[learn_state]);
-    if (learn_state != g_status.learn) {
-        g_status.learn = learn_state;
-        queue_event((gdo_event_t){GDO_EVENT_LEARN_UPDATE});
-        if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
-            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
-        }
+    g_status.learn = learn_state;
+    queue_event((gdo_event_t){GDO_EVENT_LEARN_UPDATE});
+    if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
     }
 }
 
@@ -1899,7 +1927,7 @@ inline static void update_paired_devices(gdo_paired_device_type_t type, uint8_t 
         g_status.paired_devices.total_accessories = count;
     }
 
-    if (changed) {
+    if (g_status.synced && changed) {
         queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
     }
 }
