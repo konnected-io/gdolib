@@ -86,7 +86,7 @@ static gdo_status_t g_status = {
     .close_ms = 0,
     .door_position = -1,
     .door_target = -1,
-    .client_id = 0x666,
+    .client_id = 0x5AFE,
     .rolling_code = 0,
 };
 
@@ -101,7 +101,7 @@ static esp_timer_handle_t motion_detect_timer;
 static esp_timer_handle_t door_position_sync_timer;
 static esp_timer_handle_t obst_timer;
 static void *g_user_cb_arg;
-static uint32_t g_tx_delay_ms = 50;
+static uint32_t g_tx_delay_ms = 250; // Less than 250 is too frequent and brownouts many wall controllers
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 
@@ -753,7 +753,7 @@ esp_err_t gdo_set_close_duration(uint16_t ms) {
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the time is invalid.
 */
 esp_err_t gdo_set_min_command_interval(uint32_t ms) {
-    if (ms < 50) {
+    if (ms < 250) {
         ESP_LOGE(TAG, "Invalid minimum command interval: %" PRIu32, ms);
         return ESP_ERR_INVALID_ARG;
     }
