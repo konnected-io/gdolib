@@ -148,6 +148,8 @@ typedef struct {
     int32_t door_target; // Door target position in percentage (0-10000) [OPEN-CLOSED]
     uint32_t client_id; // Client ID
     uint32_t rolling_code; // Rolling code
+    bool toggle_only; // Used when the door opener only supports the toggle command.
+    gdo_door_state_t last_move_direction; // Last move direction
 } gdo_status_t;
 
 typedef struct {
@@ -410,6 +412,12 @@ esp_err_t gdo_set_close_duration(uint16_t ms);
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the time is invalid.
 */
 esp_err_t gdo_set_min_command_interval(uint32_t ms);
+
+/**
+ * @brief Enables or disables the toggle only mode, may be required by openers that do not have obstruction sensors connected.
+ * @param toggle_only true to enable toggle only mode, false to disable.
+ */
+void gdo_set_toggle_only(bool toggle_only);
 
 #ifdef __cplusplus
 }
