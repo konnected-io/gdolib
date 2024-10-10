@@ -1585,10 +1585,10 @@ static void gdo_main_task(void* arg) {
                 cb_event = GDO_CB_EVENT_PAIRED_DEVICES;
                 break;
             case GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT:
-                cb_event = GDO_CB_EVENT_OPEN_DURATION_MEASURMENT;
+                cb_event = GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT;
                 break;
             case GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT:
-                cb_event = GDO_CB_EVENT_CLOSE_DURATION_MEASURMENT;
+                cb_event = GDO_CB_EVENT_CLOSE_DURATION_MEASUREMENT;
                 break;
             default:
                 ESP_LOGD(TAG, "Unhandled gdo event: %d", event.gdo_event);
