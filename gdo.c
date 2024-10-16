@@ -1712,6 +1712,15 @@ static void update_door_state(const gdo_door_state_t door_state) {
                 ESP_LOGE(TAG, "Failed to start door position sync timer");
             }
         }
+
+        if (door_state == GDO_DOOR_STATE_OPENING && g_status.door_target > g_status.door_position) {
+            g_status.door_target = 0;
+        } else if (door_state == GDO_DOOR_STATE_CLOSING && g_status.door_target < g_status.door_position) {
+            g_status.door_target = 10000;
+        } else {
+            g_status.door_target = g_status.door_position;
+        }
+
         g_status.last_move_direction = door_state;
     } else {
         esp_timer_stop(door_position_sync_timer);
