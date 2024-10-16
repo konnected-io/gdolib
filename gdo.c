@@ -1691,14 +1691,20 @@ static void update_door_state(const gdo_door_state_t door_state) {
                 ESP_LOGE(TAG, "Failed to start door position sync timer");
             }
         }
+
+        if (door_state == GDO_DOOR_STATE_OPENING && g_status.door_target >= g_status.door_position) {
+            g_status.door_target = 0;
+        } else if (door_state == GDO_DOOR_STATE_CLOSING && g_status.door_target <= g_status.door_position) {
+            g_status.door_target = 10000;
+        }
+
         g_status.last_move_direction = door_state;
     } else {
         esp_timer_stop(door_position_sync_timer);
 
         if (door_state == GDO_DOOR_STATE_STOPPED) {
-            int delta = g_status.door_position - g_status.door_target;
-            if (delta < -5000 || delta > 5000) {
-                ESP_LOGE(TAG, "Door failed to reach target");
+            if (g_status.door_position < 0) {
+                ESP_LOGW(TAG, "Unknown door position");
             }
         } else if (door_state == GDO_DOOR_STATE_OPEN) {
             g_status.door_position = 0;
@@ -1707,6 +1713,10 @@ static void update_door_state(const gdo_door_state_t door_state) {
             if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
                 get_openings();
             }
+        } else {
+            ESP_LOGE(TAG, "Unknown door state: %d", door_state);
+            get_status();
+            return;
         }
 
         g_door_start_moving_ms = 0;
