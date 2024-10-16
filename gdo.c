@@ -467,16 +467,18 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (target == 0) {
+        return gdo_door_open();
+    }
+
+    if (target == 10000) {
+        return gdo_door_close();
+    }
+
     if (g_status.door_position < 0 || g_status.close_ms == 0 || g_status.open_ms == 0 ||
         g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING) {
         ESP_LOGW(TAG, "Unable to move to target, door position or durations are unknown or door is moving");
         return ESP_ERR_INVALID_STATE;
-    }
-
-    if (target == 0) {
-        return gdo_door_open();
-    } else if (target == 10000) {
-        return gdo_door_close();
     }
 
     gdo_door_action_t action = GDO_DOOR_ACTION_MAX;
