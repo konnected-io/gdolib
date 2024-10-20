@@ -388,20 +388,20 @@ esp_err_t gdo_door_open(void) {
 
     if (g_status.toggle_only) {
         // If the door is stopped and the last move was opening, then the toggle command will make the door close.
-        // So we need to send a stop command after the toggle, then toggle again to open.
+        // So we need to send a toggle command to stop, then toggle again to open.
         if (g_status.door == GDO_DOOR_STATE_STOPPED && g_status.last_move_direction == GDO_DOOR_STATE_OPENING) {
             gdo_sched_cmd_args_t args = {
-                .cmd = (uint32_t)GDO_DOOR_ACTION_STOP,
+                .cmd = (uint32_t)GDO_DOOR_ACTION_TOGGLE,
                 .door_cmd = true,
             };
 
-            esp_err_t err = schedule_command(&args, 1000 * 1000);
+            esp_err_t err = schedule_command(&args, 500 * 1000);
             if (err != ESP_OK) {
                 return err;
             }
 
             args.cmd = (uint32_t)GDO_DOOR_ACTION_TOGGLE;
-            err = schedule_command(&args, 2000 * 1000);
+            err = schedule_command(&args, 1000 * 1000);
             if (err != ESP_OK) {
                 return err;
             }
@@ -425,26 +425,6 @@ esp_err_t gdo_door_close(void) {
     }
 
     if (g_status.toggle_only) {
-        // If the door is stopped and the last move was closing, then the toggle command will make the door open.
-        // So we need to send a stop command after the toggle, then toggle again to close.
-        if (g_status.door == GDO_DOOR_STATE_STOPPED && g_status.last_move_direction == GDO_DOOR_STATE_CLOSING) {
-            gdo_sched_cmd_args_t args = {
-                .cmd = (uint32_t)GDO_DOOR_ACTION_STOP,
-                .door_cmd = true,
-            };
-
-            esp_err_t err = schedule_command(&args, 1000 * 1000);
-            if (err != ESP_OK) {
-                return err;
-            }
-
-            args.cmd = (uint32_t)GDO_DOOR_ACTION_TOGGLE;
-            err = schedule_command(&args, 2000 * 1000);
-            if (err != ESP_OK) {
-                return err;
-            }
-        }
-
         return gdo_door_toggle();
     }
 
