@@ -495,7 +495,7 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
         return ESP_OK;
     }
 
-    if (duration_ms < 1000) {
+    if (duration_ms < 500) {
         ESP_LOGW(TAG, "Duration is too short, ignoring move to target");
         return ESP_ERR_INVALID_ARG;
     }
@@ -944,9 +944,15 @@ static void gdo_sync_task(void* arg) {
 
 done:
     g_status.synced = synced;
-    if (!synced && !g_protocol_forced) {
+
+    if (synced) {
+        if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
+            g_status.toggle_only = true;
+        }
+    } else if (!g_protocol_forced) {
         g_status.protocol = 0;
     }
+
     queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
     gdo_sync_task_handle = NULL;
     vTaskDelete(NULL);
