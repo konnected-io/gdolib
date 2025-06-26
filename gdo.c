@@ -70,6 +70,7 @@ static gdo_status_t g_status = {
     .light = GDO_LIGHT_STATE_MAX,
     .lock = GDO_LOCK_STATE_MAX,
     .motion = GDO_MOTION_STATE_MAX,
+    .obstruction = GDO_OBSTRUCTION_STATE_MAX,
     .motor = GDO_MOTOR_STATE_MAX,
     .button = GDO_BUTTON_STATE_MAX,
     .battery = GDO_BATT_STATE_UNKNOWN,
@@ -1383,6 +1384,16 @@ static void decode_packet(uint8_t *packet) {
     } else if ((g_status.door == GDO_DOOR_STATE_OPEN || g_status.door == GDO_DOOR_STATE_CLOSING) && cmd == GDO_CMD_OBST_1) {
         g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
         queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
+    } else if (g_config.obst_from_status && cmd == GDO_CMD_PAIR_3_RESP) {
+        if (byte1 == 0x0e) {
+            ESP_LOGI(TAG, "Obstruction detected");
+            update_obstruction_state(GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+        } else if (byte1 == 0x09) {
+            ESP_LOGI(TAG, "Obstruction cleared");
+            update_obstruction_state(GDO_OBSTRUCTION_STATE_CLEAR);
+        } else {
+            ESP_LOGW(TAG, "Unknown pair_3 response: %02x", byte2);
+        }
     } else {
         ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
     }
