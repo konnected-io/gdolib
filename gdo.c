@@ -970,7 +970,7 @@ static void IRAM_ATTR obst_isr_handler(void* arg) {
 /******************************* TIMER CALLBACKS ************************************/
 
 /**
- * @brief Runs every ~50ms anch checks the count of obstruction interrupts.
+ * @brief Runs every ~50ms and checks the count of obstruction interrupts.
  * @details 3 or more interrupts in 50ms is considered clear, 0 with the pin low is asleep,
  * and 0 with the pin high is obstructed.
  * When the obstruction state changes an event of GDO_EVENT_OBST is queued.
@@ -1001,7 +1001,7 @@ static void obst_timer_cb(void* arg) {
 }
 
 /**
- * @brief If we received a motion detection from the GDO it started at timer that will call this
+ * @brief If we received a motion detection from the GDO it started a timer that will call this
  * after 3 seconds unless reset. This will clear the motion detected state if not reset.
 */
 static void motion_detect_timer_cb(void* arg) {
@@ -1337,6 +1337,10 @@ static void decode_packet(uint8_t *packet) {
     uint32_t rolling = 0;
     uint64_t fixed = 0;
     uint32_t data = 0;
+    uint32_t time_now = esp_timer_get_time() / 1000;
+
+    static uint32_t last_obstruction_time = 0;
+    static bool obst_clear_from_status = false;
 
     decode_wireline(packet, &rolling, &fixed, &data);
 
@@ -1361,8 +1365,12 @@ static void decode_packet(uint8_t *packet) {
         update_light_state((gdo_light_state_t)((byte2 >> 1) & 1));
         update_lock_state((gdo_lock_state_t)(byte2 & 1));
         update_learn_state((gdo_learn_state_t)((byte2 >> 5) & 1));
-        if (g_config.obst_from_status) {
+        if (g_config.obst_from_status &&
+            (g_status.obstruction == GDO_OBSTRUCTION_STATE_MAX || obst_clear_from_status)) {
             update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
+            if (g_status.obstruction == GDO_OBSTRUCTION_STATE_CLEAR) {
+                obst_clear_from_status = false;
+            }
         }
     } else if (cmd == GDO_CMD_LIGHT) {
         handle_light_action((gdo_light_action_t)nibble);
@@ -1381,18 +1389,34 @@ static void decode_packet(uint8_t *packet) {
         update_paired_devices(nibble, byte2);
     } else if (cmd == GDO_CMD_BATTERY_STATUS) {
         update_battery_state(byte1);
-    } else if ((g_status.door == GDO_DOOR_STATE_OPEN || g_status.door == GDO_DOOR_STATE_CLOSING) && cmd == GDO_CMD_OBST_1) {
-        g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
-        queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
+    } else if (cmd == GDO_CMD_OBST_1) {
+        if (g_status.door == GDO_DOOR_STATE_OPEN || g_status.door == GDO_DOOR_STATE_CLOSING) {
+            g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
+            queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
+        }
+
+        /*
+         * The obstruction sensor was triggered so we toggle the reported state here,
+         * but only handle if there has been more than 1 second since the last trigger as sometimes
+         * multiple events are sent.
+         *
+         * If this was a long duration obstruction we will wait for a status update to clear the state
+         * because many obstruction events will be sent when a long obstruction is cleared so this
+         * avoids an incorrect state being reported.
+         */
+        if (g_config.obst_from_status && time_now - last_obstruction_time > 1000) {
+            if (obst_clear_from_status) {
+                get_status();
+            } else {
+                update_obstruction_state(g_status.obstruction == GDO_OBSTRUCTION_STATE_OBSTRUCTED ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+            }
+            last_obstruction_time = time_now;
+        }
     } else if (g_config.obst_from_status && cmd == GDO_CMD_PAIR_3_RESP) {
         if (byte1 == 0x0e) {
-            ESP_LOGI(TAG, "Obstruction detected");
-            update_obstruction_state(GDO_OBSTRUCTION_STATE_OBSTRUCTED);
-        } else if (byte1 == 0x09) {
-            ESP_LOGI(TAG, "Obstruction cleared");
-            update_obstruction_state(GDO_OBSTRUCTION_STATE_CLEAR);
-        } else {
-            ESP_LOGW(TAG, "Unknown pair_3 response: %02x", byte2);
+            ESP_LOGI(TAG, "Long duration obstruction detected");
+            obst_clear_from_status = true;
+            last_obstruction_time = time_now;
         }
     } else {
         ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
