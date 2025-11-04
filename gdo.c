@@ -49,6 +49,8 @@ static void update_battery_state(gdo_battery_state_t battery_state);
 static void update_door_state(const gdo_door_state_t door_state);
 static void decode_packet(uint8_t *packet);
 static esp_err_t get_status();
+static esp_err_t send_pair_2();
+static esp_err_t send_pair_3();
 static esp_err_t get_openings();
 static esp_err_t send_door_action(gdo_door_action_t action);
 static esp_err_t transmit_packet(uint8_t *packet);
@@ -87,9 +89,10 @@ static gdo_status_t g_status = {
     .close_ms = 0,
     .door_position = -1,
     .door_target = -1,
-    .client_id = 0x666,
+    .client_id = 0x42992908,
     .rolling_code = 0,
     .toggle_only = false,
+    .paired = 0,
     .last_move_direction = GDO_DOOR_STATE_UNKNOWN,
 };
 
@@ -290,6 +293,7 @@ esp_err_t gdo_deinit(void) {
     g_status.close_ms = 0;
     g_status.door_position = -1;
     g_status.door_target = -1;
+    g_status.paired = 0;
 
     err = gpio_reset_pin(g_config.uart_tx_pin);
     if (err != ESP_OK) {
@@ -522,22 +526,11 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_light_on(void) {
-    esp_err_t err = ESP_OK;
-
-    if (g_status.light == GDO_LIGHT_STATE_ON) {
-        return err;
-    }
-
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS);
-    } else {
-        err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_ON, 0, 0);
-        if (err == ESP_OK) {
-            get_status();
-        }
     }
 
-    return err;
+    return queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_ON, 0, 0);
 }
 
 /**
@@ -545,37 +538,19 @@ esp_err_t gdo_light_on(void) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_light_off(void) {
-    esp_err_t err = ESP_OK;
-
-    if (g_status.light == GDO_LIGHT_STATE_OFF) {
-        return err;
-    }
-
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LIGHT_PRESS);
-    } else {
-        err = queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_OFF, 0, 0);
-        if (err == ESP_OK) {
-            get_status();
-        }
     }
 
-    return err;
+    return queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_OFF, 0, 0);
 }
 
 /**
  * @brief Toggles the light.
- * @return ESP_OK on success, ESP_ERR_NOT_FOUND if current state is unknown,
- * ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_light_toggle(void) {
-    if (g_status.light == GDO_LIGHT_STATE_ON) {
-        return gdo_light_off();
-    } else if (g_status.light == GDO_LIGHT_STATE_OFF) {
-        return gdo_light_on();
-    } else {
-        return ESP_ERR_NOT_FOUND;
-    }
+    return queue_command(GDO_CMD_LIGHT, GDO_LIGHT_ACTION_TOGGLE, 0, 0);
 }
 
 /**
@@ -589,9 +564,9 @@ esp_err_t gdo_lock(void) {
 
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS);
-    } else {
-        return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_LOCK, 0, 0);
     }
+
+    return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_LOCK, 0, 0);
 }
 
 /**
@@ -605,24 +580,17 @@ esp_err_t gdo_unlock(void) {
 
     if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
         return gdo_v1_toggle_cmd(V1_CMD_TOGGLE_LOCK_PRESS);
-    } else {
-        return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_UNLOCK, 0, 0);
     }
+
+    return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_UNLOCK, 0, 0);
 }
 
 /**
  * @brief Toggles the lock state of the GDO.
- * @return ESP_OK on success, ESP_ERR_NOT_FOUND if current state is unknown,
- * ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_lock_toggle(void) {
-    if (g_status.lock == GDO_LOCK_STATE_LOCKED) {
-        return gdo_unlock();
-    } else if (g_status.lock == GDO_LOCK_STATE_UNLOCKED) {
-        return gdo_lock();
-    } else {
-        return ESP_ERR_NOT_FOUND;
-    }
+    return queue_command(GDO_CMD_LOCK, GDO_LOCK_ACTION_TOGGLE, 0, 0);
 }
 
 /**
@@ -636,7 +604,7 @@ esp_err_t gdo_activate_learn(void) {
     }
 
     esp_err_t err = queue_command(GDO_CMD_LEARN, GDO_LEARN_ACTION_ACTIVATE, 0, 0);
-    if (err != ESP_OK) {
+    if(err != ESP_OK) {
         return err;
     }
     return get_status();
@@ -703,9 +671,7 @@ esp_err_t gdo_clear_paired_devices(gdo_paired_device_type_t type) {
         }
     }
 
-    // return codes from theses do not indicate command success so skip the rc check
-    get_status();
-    get_paired_devices(type);
+    get_paired_devices(type); // return code do not indicate command success so skip the rc check
     return err;
 }
 
@@ -733,7 +699,7 @@ esp_err_t gdo_set_client_id(uint32_t client_id) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    g_status.client_id = client_id;
+    //g_status.client_id = client_id;
     return ESP_OK;
 }
 
@@ -888,12 +854,30 @@ static void gdo_sync_task(void* arg) {
             timeout += 1000;
         }
 
+        if (g_status.paired < 1) {
+            ESP_LOGI(TAG, "SYNC TASK: Sending pair request 2");
+            send_pair_2();
+            continue;
+        } else if (sync_stage < 2) {
+            sync_stage = 2;
+            timeout += 1000;
+        }
+
+        if (g_status.paired < 1) {
+            ESP_LOGI(TAG, "SYNC TASK: Sending pair request 3");
+            send_pair_3();
+            continue;
+        } else if (sync_stage < 3) {
+            sync_stage = 3;
+            timeout += 1000;
+        }
+
         if (g_status.openings == 0) {
             ESP_LOGI(TAG, "SYNC TASK: Getting openings");
             get_openings();
             continue;
-        } else if (sync_stage < 2) {
-            sync_stage = 2;
+        } else if (sync_stage < 4) {
+            sync_stage = 4;
             timeout += 1000;
         }
 
@@ -901,8 +885,8 @@ static void gdo_sync_task(void* arg) {
             ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
             continue;
-        } else if (sync_stage < 3) {
-            sync_stage = 3;
+        } else if (sync_stage < 5) {
+            sync_stage = 5;
             timeout += 1000;
         }
 
@@ -910,8 +894,8 @@ static void gdo_sync_task(void* arg) {
             ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
             continue;
-        } else if (sync_stage < 4) {
-            sync_stage = 4;
+        } else if (sync_stage < 6) {
+            sync_stage = 6;
             timeout += 1000;
         }
 
@@ -919,8 +903,8 @@ static void gdo_sync_task(void* arg) {
             ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
             continue;
-        } else if (sync_stage < 5) {
-            sync_stage = 5;
+        } else if (sync_stage < 7) {
+            sync_stage = 7;
             timeout += 1000;
         }
 
@@ -928,8 +912,8 @@ static void gdo_sync_task(void* arg) {
             ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
             get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
             continue;
-        } else if (sync_stage < 6) {
-            sync_stage = 6;
+        } else if (sync_stage < 8) {
+            sync_stage = 8;
             timeout += 1000;
         }
 
@@ -1217,6 +1201,7 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
 
         if (encode_wireline(g_status.rolling_code, fixed, data, message.packet) != 0) {
             free(message.packet);
+            ESP_LOGE(TAG, "Failed to encode command packet");
             return ESP_FAIL;
         }
 
@@ -1226,6 +1211,7 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
     }
 
     print_buffer(g_status.protocol, message.packet, true);
+    decode_packet(message.packet);
     if (xQueueSendToBack(gdo_tx_queue, &message, 0) == pdFALSE) {
         return ESP_ERR_NO_MEM;
     }
@@ -1346,17 +1332,23 @@ static void decode_packet(uint8_t *packet) {
 
     data &= ~0xf000;
 
+            gdo_command_t cmd = ((fixed >> 24) & 0xf00) | (data & 0xff);
+        uint8_t nibble = (data >> 8) & 0xff;
+        uint8_t byte1 = (data >> 16) & 0xff;
+        uint8_t byte2 = (data >> 24) & 0xff;
     if ((fixed & 0xFFFFFFFF) == g_status.client_id) { // my commands
         ESP_LOGE(TAG, "received mine: rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
+
+        ESP_LOGE(TAG, "cmd=%03x (%s) byte2=%02x byte1=%02x nibble=%01x", cmd, cmd_to_string(cmd), byte2, byte1, nibble);
         return;
     } else {
         ESP_LOGI(TAG, "received rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
     }
 
-    gdo_command_t cmd = ((fixed >> 24) & 0xf00) | (data & 0xff);
-    uint8_t nibble = (data >> 8) & 0xff;
-    uint8_t byte1 = (data >> 16) & 0xff;
-    uint8_t byte2 = (data >> 24) & 0xff;
+    // gdo_command_t cmd = ((fixed >> 24) & 0xf00) | (data & 0xff);
+    // uint8_t nibble = (data >> 8) & 0xff;
+    // uint8_t byte1 = (data >> 16) & 0xff;
+    // uint8_t byte2 = (data >> 24) & 0xff;
 
     ESP_LOGI(TAG, "cmd=%03x (%s) byte2=%02x byte1=%02x nibble=%01x", cmd, cmd_to_string(cmd), byte2, byte1, nibble);
 
@@ -1412,12 +1404,18 @@ static void decode_packet(uint8_t *packet) {
             }
             last_obstruction_time = time_now;
         }
-    } else if (g_config.obst_from_status && cmd == GDO_CMD_PAIR_3_RESP) {
+    } else if (g_config.obst_from_status && cmd == GDO_CMD_PAIR_3_RESP && g_status.paired >= 2) {
         if (byte1 == 0x0e) {
             ESP_LOGI(TAG, "Long duration obstruction detected");
             obst_clear_from_status = true;
             last_obstruction_time = time_now;
         }
+    } else if (cmd == GDO_CMD_PAIR_2_RESP && g_status.paired < 1) {
+        g_status.paired = 1;
+        ESP_LOGI(TAG, "Paired device 2");
+    } else if (cmd == GDO_CMD_PAIR_3_RESP && g_status.paired < 2 && byte1 == 0x09) {
+        g_status.paired = 2;
+        ESP_LOGI(TAG, "Paired device 3");
     } else {
         ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
     }
@@ -1798,6 +1796,20 @@ inline static esp_err_t get_status() {
 }
 
 /**
+ * @brief Send the second pair command to the GDO.
+*/
+inline static esp_err_t send_pair_2() {
+    return queue_command(GDO_CMD_PAIR_2, 1, 0, 0);
+}
+
+/**
+ * @brief Send the third pair command to the GDO.
+*/
+inline static esp_err_t send_pair_3() {
+    return queue_command(GDO_CMD_PAIR_3, 1, 0, 0);
+}
+
+/**
  * @brief Gets the current total openings of the GDO.
 */
 inline static esp_err_t get_openings() {
@@ -1829,7 +1841,7 @@ inline static esp_err_t send_door_action(gdo_door_action_t action) {
  * @param light_state The new light state to update to.
 */
 inline static void update_light_state(gdo_light_state_t light_state) {
-    ESP_LOGD(TAG, "Light state: %s", gdo_light_state_str[light_state]);
+    ESP_LOGE(TAG, "Light state: %s", gdo_light_state_str[light_state]);
     g_status.light = light_state;
     queue_event((gdo_event_t){GDO_EVENT_LIGHT_UPDATE});
 }
@@ -1862,7 +1874,11 @@ inline static void update_obstruction_state(gdo_obstruction_state_t obstruction_
  * @param learn_state The new learn state to update to.
 */
 inline static void update_learn_state(gdo_learn_state_t learn_state) {
-    ESP_LOGD(TAG, "Learn state: %s", gdo_learn_state_str[learn_state]);
+    if (learn_state == g_status.learn) {
+        return;
+    }
+
+    ESP_LOGD(TAG, "Learn state update: %s", gdo_learn_state_str[learn_state]);
     g_status.learn = learn_state;
     queue_event((gdo_event_t){GDO_EVENT_LEARN_UPDATE});
     if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
