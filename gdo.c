@@ -107,6 +107,21 @@ static void *g_user_cb_arg;
 static uint32_t g_tx_delay_ms = 50;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
+// Empirical offset added to the move-to-target STOP delay to compensate for the
+// difference between OPEN and STOP command latencies. Default 0; tune on the
+// bench by observing actual landing position vs. requested target.
+static const uint32_t MOVE_TO_TARGET_STOP_OFFSET_MS = 0;
+// Minimum commanded motion below which the OPEN->STOP sequence is too short for
+// the GDO to reliably register motion. Reject moves with shorter duration.
+static const uint32_t MOVE_TO_TARGET_MIN_DURATION_MS = 800;
+// If the requested target is within this many units (0.01% per unit) of the
+// current position, treat the call as a no-op rather than issuing a futile move.
+static const uint32_t MOVE_TO_TARGET_NEAR_THRESHOLD = 200;
+// Extra latency to add to the STOP delay when the toggle-only stop-then-open
+// dance is taken — that dance schedules toggles at +500ms and +1000ms before
+// motion starts, so STOP needs to be pushed out to align the motor pulse.
+static const uint32_t MOVE_TO_TARGET_TOGGLE_DANCE_MS = 1000;
+
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -482,35 +497,66 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    gdo_door_action_t action = GDO_DOOR_ACTION_MAX;
     int delta = g_status.door_position - target;
-    float duration_ms = 0.0f;
-    if (delta < 0) {
-        action = GDO_DOOR_ACTION_CLOSE;
-        duration_ms = (g_status.close_ms / 10000.f) * -delta;
-    } else if (delta > 0) {
-        action = GDO_DOOR_ACTION_OPEN;
-        duration_ms = (g_status.open_ms / 10000.f) * delta;
-    } else {
-        ESP_LOGD(TAG, "Door is already at target %.2f", g_status.door_position / 100.0f);
+    int abs_delta = delta < 0 ? -delta : delta;
+
+    if ((uint32_t)abs_delta < MOVE_TO_TARGET_NEAR_THRESHOLD) {
+        ESP_LOGD(TAG, "Already within %.2f%% of target %.2f, no-op",
+                 MOVE_TO_TARGET_NEAR_THRESHOLD / 100.0f, target / 100.0f);
+        g_status.door_target = target;
         return ESP_OK;
     }
 
-    if (duration_ms < 500) {
-        ESP_LOGW(TAG, "Duration is too short, ignoring move to target");
+    float duration_ms;
+    bool opening;
+    if (delta > 0) {
+        opening = true;
+        duration_ms = (g_status.open_ms / 10000.f) * delta;
+    } else {
+        opening = false;
+        duration_ms = (g_status.close_ms / 10000.f) * -delta;
+    }
+
+    if (duration_ms < MOVE_TO_TARGET_MIN_DURATION_MS) {
+        ESP_LOGW(TAG, "Move to target rejected: duration %.0fms < min %" PRIu32
+                 "ms (delta=%d, open_ms=%u, close_ms=%u)",
+                 duration_ms, MOVE_TO_TARGET_MIN_DURATION_MS, delta,
+                 g_status.open_ms, g_status.close_ms);
         return ESP_ERR_INVALID_ARG;
     }
+
+    // Account for the toggle-only stop-then-open dance latency. gdo_door_open()
+    // schedules toggles at +500 and +1000ms before motion actually starts when
+    // the door is STOPPED with last_move_direction matching the requested
+    // direction. The STOP must be pushed out by that same latency so the motor
+    // sees the intended pulse width.
+    uint32_t stop_delay_ms = (uint32_t)duration_ms + MOVE_TO_TARGET_STOP_OFFSET_MS;
+    if (g_status.toggle_only && g_status.door == GDO_DOOR_STATE_STOPPED &&
+        ((opening && g_status.last_move_direction == GDO_DOOR_STATE_OPENING) ||
+         (!opening && g_status.last_move_direction == GDO_DOOR_STATE_CLOSING))) {
+        stop_delay_ms += MOVE_TO_TARGET_TOGGLE_DANCE_MS;
+    }
+
+    ESP_LOGI(TAG, "Move to target %.2f%% from %.2f%%: %s for %.0fms, STOP scheduled at +%" PRIu32 "ms",
+             target / 100.0f, g_status.door_position / 100.0f,
+             opening ? "OPEN" : "CLOSE", duration_ms, stop_delay_ms);
 
     gdo_sched_cmd_args_t args = {
         .cmd = (uint32_t)GDO_DOOR_ACTION_STOP,
         .door_cmd = true,
     };
-    err = schedule_command(&args, duration_ms * 1000);
+    err = schedule_command(&args, stop_delay_ms * 1000);
     if (err != ESP_OK) {
         return err;
     }
 
-    err = send_door_action(action);
+    // Route through gdo_door_open()/gdo_door_close() so toggle-only / Sec+ v1
+    // openers get the stop-then-open dance for free. Both primitives set
+    // door_target to 0 or 10000; we override with the partial target afterward.
+    // The clamp at update_door_state() only fires when target is in the
+    // *opposite* direction of motion, so the partial target is preserved
+    // through the OPENING/CLOSING transition.
+    err = opening ? gdo_door_open() : gdo_door_close();
     if (err == ESP_OK) {
         g_status.door_target = target;
     }
@@ -1031,7 +1077,20 @@ static void door_position_sync_timer_cb(void* arg) {
 
     g_door_start_moving_ms += duration;
 
-    if (g_status.door_position == 0 || g_status.door_position == 10000) {
+    // For a partial-target move, clamp the estimate at the target and stop the timer.
+    // The motor keeps running until the scheduled STOP fires; letting the estimate
+    // sail past the target is what makes a small physical overshoot look like 10%.
+    bool partial_target_reached =
+        (g_status.door == GDO_DOOR_STATE_OPENING &&
+         g_status.door_target > 0 && g_status.door_position <= g_status.door_target) ||
+        (g_status.door == GDO_DOOR_STATE_CLOSING &&
+         g_status.door_target < 10000 && g_status.door_position >= g_status.door_target);
+
+    if (partial_target_reached) {
+        g_status.door_position = g_status.door_target;
+    }
+
+    if (g_status.door_position == 0 || g_status.door_position == 10000 || partial_target_reached) {
         esp_timer_stop(door_position_sync_timer);
     }
 
@@ -1046,6 +1105,8 @@ static void scheduled_cmd_timer_cb(void* arg) {
     gdo_sched_cmd_args_t *args = (gdo_sched_cmd_args_t*)arg;
 
     if (args->door_cmd) {
+        ESP_LOGI(TAG, "Scheduled door action %" PRIu32 " firing at %.2f%%",
+                 args->cmd, g_status.door_position / 100.0f);
         send_door_action((gdo_door_action_t)args->cmd);
     } else {
         queue_command((gdo_command_t)args->cmd, args->nibble, args->byte1, args->byte2);
@@ -1736,7 +1797,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
 
     if (door_state == GDO_DOOR_STATE_OPENING || door_state == GDO_DOOR_STATE_CLOSING) {
         if (g_status.door_position >= 0 && g_status.close_ms > 0 && g_status.open_ms > 0) {
-            g_door_start_moving_ms = (uint32_t)((esp_timer_get_time() / 1000) - 1000);
+            g_door_start_moving_ms = (uint32_t)(esp_timer_get_time() / 1000);
             if (esp_timer_start_periodic(door_position_sync_timer, 500 * 1000) != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to start door position sync timer");
             }
