@@ -501,9 +501,11 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
     int abs_delta = delta < 0 ? -delta : delta;
 
     if ((uint32_t)abs_delta < MOVE_TO_TARGET_NEAR_THRESHOLD) {
-        ESP_LOGD(TAG, "Already within %.2f%% of target %.2f, no-op",
-                 MOVE_TO_TARGET_NEAR_THRESHOLD / 100.0f, target / 100.0f);
-        g_status.door_target = target;
+        ESP_LOGI(TAG, "Move to target %.2f%% no-op: already within %.2f%% (current %.2f%%)",
+                 target / 100.0f, MOVE_TO_TARGET_NEAR_THRESHOLD / 100.0f,
+                 g_status.door_position / 100.0f);
+        g_status.door_target = g_status.door_position;
+        queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
         return ESP_OK;
     }
 
@@ -518,10 +520,16 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
     }
 
     if (duration_ms < MOVE_TO_TARGET_MIN_DURATION_MS) {
-        ESP_LOGW(TAG, "Move to target rejected: duration %.0fms < min %" PRIu32
-                 "ms (delta=%d, open_ms=%u, close_ms=%u)",
-                 duration_ms, MOVE_TO_TARGET_MIN_DURATION_MS, delta,
-                 g_status.open_ms, g_status.close_ms);
+        ESP_LOGW(TAG, "Move to target %.2f%% rejected: duration %.0fms < min %" PRIu32
+                 "ms (delta=%d, open_ms=%u, close_ms=%u). Resetting target to current "
+                 "position %.2f%%.",
+                 target / 100.0f, duration_ms, MOVE_TO_TARGET_MIN_DURATION_MS, delta,
+                 g_status.open_ms, g_status.close_ms, g_status.door_position / 100.0f);
+        // Reset the target to the current position and fire a position event so
+        // the host (e.g. cover plugin) can revert any optimistic IS_OPENING /
+        // IS_CLOSING state it set in anticipation of this move.
+        g_status.door_target = g_status.door_position;
+        queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
         return ESP_ERR_INVALID_ARG;
     }
 
