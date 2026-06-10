@@ -15,6 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stddef.h>
+
 #include "gdo.h"
 #include "gdo_priv.h"
 
@@ -213,58 +215,68 @@ void print_buffer(gdo_protocol_type_t protocol, uint8_t* buf, bool is_tx) {
     }
 }
 
+/*
+ * Bounds-clamped table lookup. Packet-derived values are routed through these
+ * helpers, so any out-of-range index (corrupt frame, unmapped opener state)
+ * must return a safe sentinel rather than reading past the end of the table.
+ * The count is derived from the array itself so it stays correct if entries
+ * are added or removed.
+ */
+#define GDO_STR_LOOKUP(arr, idx) \
+    (((size_t)(idx) < (sizeof(arr) / sizeof((arr)[0])) ? (arr)[(idx)] : "Invalid"))
+
 const char* gdo_door_state_to_string(gdo_door_state_t state) {
-    return gdo_door_state_str[state];
+    return GDO_STR_LOOKUP(gdo_door_state_str, state);
 }
 
 const char* gdo_light_state_to_string(gdo_light_state_t state) {
-    return gdo_light_state_str[state];
+    return GDO_STR_LOOKUP(gdo_light_state_str, state);
 }
 
 const char* gdo_lock_state_to_string(gdo_lock_state_t state) {
-    return gdo_lock_state_str[state];
+    return GDO_STR_LOOKUP(gdo_lock_state_str, state);
 }
 
 const char* gdo_motion_state_to_string(gdo_motion_state_t state) {
-    return gdo_motion_state_str[state];
+    return GDO_STR_LOOKUP(gdo_motion_state_str, state);
 }
 
 const char* gdo_obstruction_state_to_string(gdo_obstruction_state_t state) {
-    return gdo_obstruction_state_str[state];
+    return GDO_STR_LOOKUP(gdo_obstruction_state_str, state);
 }
 
 const char* gdo_motor_state_to_string(gdo_motor_state_t state) {
-    return gdo_motor_state_str[state];
+    return GDO_STR_LOOKUP(gdo_motor_state_str, state);
 }
 
 const char* gdo_button_state_to_string(gdo_button_state_t state) {
-    return gdo_button_state_str[state];
+    return GDO_STR_LOOKUP(gdo_button_state_str, state);
 }
 
 const char* gdo_battery_state_to_string(gdo_battery_state_t state) {
-    return gdo_battery_state_str[state];
+    return GDO_STR_LOOKUP(gdo_battery_state_str, state);
 }
 
 const char* gdo_learn_state_to_string(gdo_learn_state_t state) {
-    return gdo_learn_state_str[state];
+    return GDO_STR_LOOKUP(gdo_learn_state_str, state);
 }
 
 const char* gdo_paired_device_type_to_string(gdo_paired_device_type_t type) {
-    return gdo_paired_device_type_str[type];
+    return GDO_STR_LOOKUP(gdo_paired_device_type_str, type);
 }
 
 const char* gdo_light_action_to_string(gdo_light_action_t action) {
-    return gdo_light_action_str[action];
+    return GDO_STR_LOOKUP(gdo_light_action_str, action);
 }
 
 const char* gdo_lock_action_to_string(gdo_lock_action_t action) {
-    return gdo_lock_action_str[action];
+    return GDO_STR_LOOKUP(gdo_lock_action_str, action);
 }
 
 const char* gdo_door_action_to_string(gdo_door_action_t action) {
-    return gdo_door_action_str[action];
+    return GDO_STR_LOOKUP(gdo_door_action_str, action);
 }
 
 const char* gdo_protocol_type_to_string(gdo_protocol_type_t protocol) {
-    return gdo_protocol_type_str[protocol];
+    return GDO_STR_LOOKUP(gdo_protocol_type_str, protocol);
 }
