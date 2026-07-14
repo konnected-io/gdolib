@@ -2057,8 +2057,20 @@ inline static void update_button_state(gdo_button_state_t button_state) {
  * @brief Updates the local motion state and queues an event if it has changed.
  * Also starts a timer to clear the motion state if not reset.
  * @param motion_state The new motion state to update to.
+ * @details Motion is a Security+ 2.0 only concept. `gdo_sync_task()` probes for a V2
+ * opener by optimistically setting the protocol to V2 and running the V2 decoder against
+ * a bus that may still turn out to be V1, so the protocol alone does not prove we are
+ * talking to a V2 opener; only a completed sync does. Without the `synced` check a
+ * corrupt V1 frame that happens to satisfy the wireline signature and parity checks can
+ * decode as GDO_CMD_MOTION and publish a motion event on an opener that has no motion
+ * sensor at all.
 */
 inline static void update_motion_state(gdo_motion_state_t motion_state) {
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2 || !g_status.synced) {
+        ESP_LOGD(TAG, "Ignoring motion state on unsynced or non-secplus-v2 opener");
+        return;
+    }
+
     ESP_LOGD(TAG, "Motion state: %s", gdo_motion_state_to_string(motion_state));
     if (motion_state == GDO_MOTION_STATE_DETECTED) {
         esp_timer_stop(motion_detect_timer);
@@ -2070,9 +2082,7 @@ inline static void update_motion_state(gdo_motion_state_t motion_state) {
         queue_event((gdo_event_t){GDO_EVENT_MOTION_UPDATE});
     }
 
-    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
-        get_status();
-    }
+    get_status();
 }
 
 /**
