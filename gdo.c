@@ -122,6 +122,20 @@ static const uint32_t MOVE_TO_TARGET_NEAR_THRESHOLD = 200;
 // motion starts, so STOP needs to be pushed out to align the motor pulse.
 static const uint32_t MOVE_TO_TARGET_TOGGLE_DANCE_MS = 1000;
 
+// Security+ 2.0 obstruction timing, measured on a live opener (see issue #28):
+//   - each frame is retransmitted ~74ms apart (same rolling code);
+//   - a genuine beam edge is >= ~1050ms from the next OBST_1;
+//   - the clear-edge OBST_1 trails the PAIR_3_RESP 0x09 clear marker by ~471ms;
+//   - the STATUS obstruction bit lags the beam by ~4.4s.
+// One window collapses the retransmit AND suppresses the trailing clear-edge OBST_1
+// that follows an authoritative 0x09/STATUS clear, while staying below the minimum
+// real-edge spacing so a genuine fast edge is never swallowed.
+static const uint32_t OBST_EDGE_DEBOUNCE_MS = 750;
+// The STATUS obstruction bit lags the beam by ~4.4s, so a "clear" bit seen within this
+// window of an obstruction event is stale and must not cancel it. Past the window the
+// bit is trustworthy again, so it can repair a desynced state (the #27 stuck case).
+static const uint32_t OBST_STATUS_CLEAR_GUARD_MS = 5000;
+
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -1053,9 +1067,10 @@ static void obst_timer_cb(void* arg) {
 
     stats->count = 0;
 
-    if (obs_state != GDO_OBSTRUCTION_STATE_MAX && obs_state != g_status.obstruction) {
+    if (obs_state != GDO_OBSTRUCTION_STATE_MAX) {
+        // update_obstruction_state() already no-ops on an unchanged state and queues
+        // GDO_EVENT_OBST itself; the caller must not queue a second one (double callback).
         update_obstruction_state(obs_state);
-        queue_event((gdo_event_t){GDO_EVENT_OBST});
     }
 }
 
@@ -1414,7 +1429,10 @@ static void decode_packet(uint8_t *packet) {
     uint32_t time_now = esp_timer_get_time() / 1000;
 
     static uint32_t last_obstruction_time = 0;
-    static bool obst_clear_from_status = false;
+    // Set once the opener has confirmed a *sustained* obstruction (PAIR_3_RESP 0x0e or a
+    // STATUS obstructed bit). While set, OBST_1 repeats are ignored and the clear is taken
+    // from PAIR_3_RESP 0x09 / the STATUS bit rather than from an OBST_1 toggle.
+    static bool obst_confirmed = false;
 
     if (decode_wireline(packet, &rolling, &fixed, &data) != 0) {
         ESP_LOGD(TAG, "Failed to decode wireline frame; dropping");
@@ -1442,11 +1460,24 @@ static void decode_packet(uint8_t *packet) {
         update_light_state((gdo_light_state_t)((byte2 >> 1) & 1));
         update_lock_state((gdo_lock_state_t)(byte2 & 1));
         update_learn_state((gdo_learn_state_t)((byte2 >> 5) & 1));
-        if (g_config.obst_from_status &&
-            (g_status.obstruction == GDO_OBSTRUCTION_STATE_MAX || obst_clear_from_status)) {
-            update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
-            if (g_status.obstruction == GDO_OBSTRUCTION_STATE_CLEAR) {
-                obst_clear_from_status = false;
+        if (g_config.obst_from_status) {
+            // The STATUS obstruction bit (active-low: 1 = clear) lags the beam by ~4.4s
+            // (issue #28), so it is a backstop, not a fast path. Trust "obstructed"
+            // immediately (fail-safe). Only accept "clear" once a sustained obstruction
+            // has been confirmed, on the first frame after boot, or once enough time has
+            // passed that the bit is no longer racing a fresh OBST_1 trip -- that last
+            // case lets a stale bit repair a desynced state without cancelling a real trip.
+            gdo_obstruction_state_t status_obst = (gdo_obstruction_state_t)((byte1 >> 6) & 1);
+            if (status_obst == GDO_OBSTRUCTION_STATE_OBSTRUCTED) {
+                obst_confirmed = true;
+                last_obstruction_time = time_now;
+                update_obstruction_state(GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+            } else if (obst_confirmed ||
+                       g_status.obstruction == GDO_OBSTRUCTION_STATE_MAX ||
+                       time_now - last_obstruction_time > OBST_STATUS_CLEAR_GUARD_MS) {
+                obst_confirmed = false;
+                last_obstruction_time = time_now;
+                update_obstruction_state(GDO_OBSTRUCTION_STATE_CLEAR);
             }
         }
     } else if (cmd == GDO_CMD_LIGHT) {
@@ -1473,27 +1504,37 @@ static void decode_packet(uint8_t *packet) {
         }
 
         /*
-         * The obstruction sensor was triggered so we toggle the reported state here,
-         * but only handle if there has been more than 1 second since the last trigger as sometimes
-         * multiple events are sent.
-         *
-         * If this was a long duration obstruction we will wait for a status update to clear the state
-         * because many obstruction events will be sent when a long obstruction is cleared so this
-         * avoids an incorrect state being reported.
+         * OBST_1 fires on both the trip and the clear edge with identical payload, and is
+         * the only signal for brief/intermittent obstructions -- the STATUS bit and
+         * PAIR_3_RESP only track *continuous* obstruction (issue #28) -- so we toggle on it.
+         * Guarded two ways: OBST_EDGE_DEBOUNCE_MS collapses the ~74ms retransmit and the
+         * ~471ms clear-edge OBST_1 that trails an authoritative 0x09/STATUS clear (so it
+         * cannot re-assert obstructed), and once a sustained obstruction is confirmed we
+         * stop toggling entirely -- the clear then comes from 0x09/STATUS, not an OBST_1.
          */
-        if (g_config.obst_from_status && time_now - last_obstruction_time > 1000) {
-            if (obst_clear_from_status) {
-                get_status();
-            } else {
-                update_obstruction_state(g_status.obstruction == GDO_OBSTRUCTION_STATE_OBSTRUCTED ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
-            }
+        if (g_config.obst_from_status && !obst_confirmed &&
+            time_now - last_obstruction_time > OBST_EDGE_DEBOUNCE_MS) {
+            update_obstruction_state(g_status.obstruction == GDO_OBSTRUCTION_STATE_OBSTRUCTED ?
+                                     GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
             last_obstruction_time = time_now;
         }
     } else if (g_config.obst_from_status && cmd == GDO_CMD_PAIR_3_RESP) {
+        /*
+         * The opener's explicit confirmed-obstruction edge markers for a *sustained*
+         * obstruction, ~3.7s after the physical edge (issue #28). Authoritative: they also
+         * repair an OBST_1 toggle desync. The 0x09 clear branch was previously dropped,
+         * which left long obstructions with no explicit clear -- the root of issue #27.
+         */
         if (byte1 == 0x0e) {
             ESP_LOGI(TAG, "Long duration obstruction detected");
-            obst_clear_from_status = true;
+            obst_confirmed = true;
             last_obstruction_time = time_now;
+            update_obstruction_state(GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+        } else if (byte1 == 0x09) {
+            ESP_LOGI(TAG, "Long duration obstruction cleared");
+            obst_confirmed = false;
+            last_obstruction_time = time_now;
+            update_obstruction_state(GDO_OBSTRUCTION_STATE_CLEAR);
         }
     } else {
         ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
@@ -1949,10 +1990,8 @@ inline static void update_obstruction_state(gdo_obstruction_state_t obstruction_
     }
 
     ESP_LOGD(TAG, "Obstruction state: %s", gdo_obstruction_state_to_string(obstruction_state));
-    if (obstruction_state != g_status.obstruction) {
-        g_status.obstruction = obstruction_state;
-        queue_event((gdo_event_t){GDO_EVENT_OBST});
-    }
+    g_status.obstruction = obstruction_state;
+    queue_event((gdo_event_t){GDO_EVENT_OBST});
 }
 
 /**
