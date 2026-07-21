@@ -21,6 +21,16 @@ There is no test suite, linter, or formatter configured. Requires ESP-IDF v4.4+.
 
 The component declares its sources in [CMakeLists.txt](CMakeLists.txt) (`gdo.c`, `gdo_utils.c`, `secplus.c`); new `.c` files must be added there or they will not be compiled.
 
+### Debugging the protocol against a live opener
+
+Some questions — obstruction timing, undocumented frames, edge semantics — can only be
+answered by watching real Security+ frames on a live device. The full loop (build a debug
+gdolib, OTA-flash it via ESPHome, stream logs, and correlate) plus the non-obvious traps
+(local IDF `path:` component, ESPHome ≥ 2026.7.0 native build, un-stripping gdolib's
+`ESP_LOGx`, avoiding log-stream frame drops, OTA/WiFi safety) is documented in
+[docs/live-capture-workflow.md](docs/live-capture-workflow.md). Reach for it when a
+protocol change would otherwise be a guess.
+
 ## Architecture
 
 ### Three translation units, one library
