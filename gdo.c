@@ -135,6 +135,13 @@ static const uint32_t OBST_EDGE_DEBOUNCE_MS = 750;
 // window of an obstruction event is stale and must not cancel it. Past the window the
 // bit is trustworthy again, so it can repair a desynced state (the #27 stuck case).
 static const uint32_t OBST_STATUS_CLEAR_GUARD_MS = 5000;
+// An authoritative PAIR_3_RESP 0x09 clear is trailed by one more OBST_1 (the physical
+// clear edge) which must not re-assert obstructed. Bench-measured at 471ms and 734ms on
+// two runs, so OBST_EDGE_DEBOUNCE_MS alone left only 16ms of margin. Suppression is a
+// *one-shot* flag rather than a wider debounce, bounded by this window so it self-expires:
+// an unused flag can never swallow a later genuine trip. The window sits below the minimum
+// observed real-edge spacing (~1055ms) so a genuine re-break still registers.
+static const uint32_t OBST_TRAILING_EDGE_WINDOW_MS = 1000;
 
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
@@ -1428,11 +1435,24 @@ static void decode_packet(uint8_t *packet) {
     uint32_t data = 0;
     uint32_t time_now = esp_timer_get_time() / 1000;
 
+    // Anchor for the STATUS stale-clear guard: the last time obstruction state was settled
+    // by a *status-class* signal (STATUS bit or PAIR_3_RESP).
     static uint32_t last_obstruction_time = 0;
+    // Anchor for the OBST_1 edge debounce. Deliberately separate from last_obstruction_time:
+    // STATUS frames arrive continuously and unrelated to beam edges, so anchoring the edge
+    // debounce to them lets a routine STATUS clear swallow a genuine break edge that happens
+    // to land within OBST_EDGE_DEBOUNCE_MS of it, inverting the toggle phase. Only real
+    // obstruction *edges* stamp this: an OBST_1 toggle, or an authoritative 0x0e/0x09 (whose
+    // trailing clear-edge OBST_1 ~471ms later must still be suppressed).
+    static uint32_t last_obst_edge_time = 0;
     // Set once the opener has confirmed a *sustained* obstruction (PAIR_3_RESP 0x0e or a
     // STATUS obstructed bit). While set, OBST_1 repeats are ignored and the clear is taken
     // from PAIR_3_RESP 0x09 / the STATUS bit rather than from an OBST_1 toggle.
     static bool obst_confirmed = false;
+    // Armed by an authoritative PAIR_3_RESP 0x09 clear; consumed by the single trailing
+    // clear-edge OBST_1 that follows it. One-shot and time-bounded (see
+    // OBST_TRAILING_EDGE_WINDOW_MS) so it cannot swallow a later genuine obstruction.
+    static bool obst_trailing_edge_pending = false;
 
     if (decode_wireline(packet, &rolling, &fixed, &data) != 0) {
         ESP_LOGD(TAG, "Failed to decode wireline frame; dropping");
@@ -1507,15 +1527,26 @@ static void decode_packet(uint8_t *packet) {
          * OBST_1 fires on both the trip and the clear edge with identical payload, and is
          * the only signal for brief/intermittent obstructions -- the STATUS bit and
          * PAIR_3_RESP only track *continuous* obstruction (issue #28) -- so we toggle on it.
-         * Guarded two ways: OBST_EDGE_DEBOUNCE_MS collapses the ~74ms retransmit and the
-         * ~471ms clear-edge OBST_1 that trails an authoritative 0x09/STATUS clear (so it
-         * cannot re-assert obstructed), and once a sustained obstruction is confirmed we
-         * stop toggling entirely -- the clear then comes from 0x09/STATUS, not an OBST_1.
+         * Guarded three ways: OBST_EDGE_DEBOUNCE_MS collapses the ~74ms retransmit; a
+         * one-shot flag absorbs the clear edge trailing an authoritative 0x09 (so it cannot
+         * re-assert obstructed); and once a sustained obstruction is confirmed we stop
+         * toggling entirely -- the clear then comes from 0x09/STATUS, not an OBST_1.
          */
-        if (g_config.obst_from_status && !obst_confirmed &&
-            time_now - last_obstruction_time > OBST_EDGE_DEBOUNCE_MS) {
+        if (g_config.obst_from_status && obst_trailing_edge_pending &&
+            time_now - last_obst_edge_time < OBST_TRAILING_EDGE_WINDOW_MS) {
+            // The clear edge for an obstruction already cleared by 0x09. Absorb it once,
+            // and re-anchor the debounce so this edge's own ~74ms retransmits fall inside
+            // it -- otherwise the retransmit would fall through and toggle obstructed back on.
+            obst_trailing_edge_pending = false;
+            last_obst_edge_time = time_now;
+        } else if (g_config.obst_from_status && !obst_confirmed &&
+            time_now - last_obst_edge_time > OBST_EDGE_DEBOUNCE_MS) {
+            obst_trailing_edge_pending = false;
             update_obstruction_state(g_status.obstruction == GDO_OBSTRUCTION_STATE_OBSTRUCTED ?
                                      GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+            last_obst_edge_time = time_now;
+            // Also arm the STATUS stale-clear guard: the STATUS bit trails the beam by
+            // ~4.4s, so without this a stale "clear" bit would cancel a fresh OBST_1 trip.
             last_obstruction_time = time_now;
         }
     } else if (g_config.obst_from_status && cmd == GDO_CMD_PAIR_3_RESP) {
@@ -1529,11 +1560,17 @@ static void decode_packet(uint8_t *packet) {
             ESP_LOGI(TAG, "Long duration obstruction detected");
             obst_confirmed = true;
             last_obstruction_time = time_now;
+            last_obst_edge_time = time_now;
             update_obstruction_state(GDO_OBSTRUCTION_STATE_OBSTRUCTED);
         } else if (byte1 == 0x09) {
             ESP_LOGI(TAG, "Long duration obstruction cleared");
             obst_confirmed = false;
             last_obstruction_time = time_now;
+            // Anchor and arm the one-shot suppression of the physical clear edge that
+            // trails this marker (bench-measured 471ms and 734ms), so it cannot toggle
+            // obstructed straight back on.
+            last_obst_edge_time = time_now;
+            obst_trailing_edge_pending = true;
             update_obstruction_state(GDO_OBSTRUCTION_STATE_CLEAR);
         }
     } else {
