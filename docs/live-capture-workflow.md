@@ -117,6 +117,35 @@ if (cmd == GDO_CMD_OBST_1 || cmd == GDO_CMD_OBST_2 ||
 transitions frame-by-frame. This is a throwaway capture aid — **do not commit it**;
 stash it (`git stash push gdo.c`) while working on real fixes.
 
+### Always add cumulative counters
+
+**A missing log line does not mean the frame never arrived.** ESPHome drops log lines
+under burst load (see "Don't let the log stream drop frames" above), which is exactly
+when obstruction frames cluster. An absent line is therefore ambiguous — frame-never-sent
+vs line-dropped — and those two readings point at opposite root causes.
+
+Cumulative counters resolve it: a jump between two *surviving* lines proves the frames
+arrived and were decoded even though their own lines never made it out.
+
+```c
+static uint32_t n1 = 0;                 // OBST_1 frames decoded
+if (cmd == GDO_CMD_OBST_1) {
+    ++n1;
+}
+/* ...and where the OBST_1 toggle actually fires: */
+++obst_toggle_count;                    // declare as a static uint32_t alongside n1
+```
+
+Append them to the capture line (`... n1=%" PRIu32 " nTog=%" PRIu32`, `n1`,
+`obst_toggle_count`). `n1 - nTog` is then exactly how many edges the debounce swallowed.
+
+This is not hypothetical bookkeeping. During the PR #29 bench run, the rapid-trips
+scenario showed no OBST_1 lines for waves 2–5 and the obvious reading was "the opener
+coalesces rapid waves." The counters proved the opener genuinely sent only 2 OBST_1
+frames for 5 waves *and* that the debounce swallowed none of them — reversing the initial
+conclusion and moving the fault off gdolib entirely. Without them the session would have
+tuned a debounce constant that was never the problem.
+
 ## OTA safety on a live device
 
 - Build from a copy of the **device's own running config** (or the stock config with
@@ -144,6 +173,11 @@ grep -aE '#28CAP|cmd=084|cmd=085|cmd=0a1|Obstruction' live.log \
   network stream can lag/batch several seconds under load.
 - **Check rolling-code continuity** (`received rolling=…`) around any burst; a gap
   means dropped log frames — quiet the noise (step 4) and re-run before trusting counts.
+- **The opener transmits nothing while idle** — 73-second frame gaps are normal. Two
+  consequences when reading a trace: a long silence is not a fault, and any driver logic
+  that self-repairs *on the next frame* (e.g. a STATUS-bit backstop) may simply never run.
+  A state that looks permanently stuck can be one frame away from correcting itself, so
+  confirm with a deliberate beam event before concluding the logic is broken.
 
 ## Reverting when done
 
