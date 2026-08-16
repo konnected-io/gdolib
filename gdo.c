@@ -91,6 +91,7 @@ static gdo_status_t g_status = {
     .rolling_code = 0,
     .toggle_only = false,
     .last_move_direction = GDO_DOOR_STATE_UNKNOWN,
+    .inc_on_release = false,
 };
 
 static bool g_protocol_forced;
@@ -885,6 +886,14 @@ esp_err_t gdo_set_min_command_interval(uint32_t ms) {
 */
 void gdo_set_toggle_only(bool toggle_only) {
     g_status.toggle_only = toggle_only;
+}
+
+/**
+ * @brief Sets whether to increment the rolling code on release.
+ * @param inc_on_release true to increment on release, false otherwise.
+ */
+void gdo_set_increment_on_release(bool inc_on_release) {
+    g_status.inc_on_release = inc_on_release;
 }
 
 /************************************ LOCAL FUNCTIONS ************************************/
@@ -1981,7 +1990,9 @@ inline static esp_err_t send_door_action(gdo_door_action_t action) {
     } else {
         err = queue_command(GDO_CMD_DOOR_ACTION, action, 1, 1);
         if (err == ESP_OK) {
-            --g_status.rolling_code; // only increment after the second command
+            if (!g_status.inc_on_release) {
+                --g_status.rolling_code; // only increment after the second command
+            }
             err = queue_command(GDO_CMD_DOOR_ACTION, action, 0, 1);
         }
     }
