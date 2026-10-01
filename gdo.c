@@ -142,6 +142,10 @@ static const uint32_t OBST_STATUS_CLEAR_GUARD_MS = 5000;
 // an unused flag can never swallow a later genuine trip. The window sits below the minimum
 // observed real-edge spacing (~1055ms) so a genuine re-break still registers.
 static const uint32_t OBST_TRAILING_EDGE_WINDOW_MS = 1000;
+// Minimum spacing between GET_STATUS requests sent to recover from a misaligned Sec+ v2
+// RX stream. Each request spends a rolling code, so a burst of line noise must not turn
+// into a burst of transmissions.
+static const uint32_t RX_RESYNC_STATUS_INTERVAL_MS = 3000;
 
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
@@ -1579,6 +1583,46 @@ static void decode_packet(uint8_t *packet) {
 }
 
 /**
+ * @brief Realigns the Sec+ v2 RX stream after a framing error.
+ *
+ * The RX loop reads fixed GDO_PACKET_SIZE frames, paced by UART_BREAK/UART_DATA events. If
+ * that count ever disagrees with what is actually in the UART ring buffer (a noise fragment,
+ * a dropped event), every later read straddles two frames and fails the signature check.
+ * Nothing realigns it except the flush at the end of every transmit_packet(), and the opener
+ * is silent while idle, so status silently stops updating until the next command is sent.
+ *
+ * Flushing lands the next read on a frame boundary; the opener retransmits every frame, so the
+ * discarded one is normally received again. A rate-limited GET_STATUS covers the case where
+ * it isn't.
+ * @param rx_pending The main task's pending frame count, cleared since the flush drops them.
+*/
+static void v2_rx_resync(uint8_t *rx_pending) {
+    static uint32_t last_status_ms;
+    static bool status_requested;
+    uint32_t now = esp_timer_get_time() / 1000;
+
+    uart_flush_input(g_config.uart_num);
+    *rx_pending = 0;
+
+    if (!g_status.synced) {
+        return; // the sync task is already querying the opener
+    }
+
+    if (status_requested && now - last_status_ms < RX_RESYNC_STATUS_INTERVAL_MS) {
+        ESP_LOGD(TAG, "RX resync, GET_STATUS sent %" PRIu32 "ms ago", now - last_status_ms);
+        return;
+    }
+
+    status_requested = true;
+    last_status_ms = now;
+    ESP_LOGW(TAG, "RX stream misaligned, flushed and requesting status");
+    esp_err_t err = get_status();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to request status after RX resync: %s", esp_err_to_name(err));
+    }
+}
+
+/**
  * @brief Main task that handles all the events from the UART and other tasks.
 */
 static void gdo_main_task(void* arg) {
@@ -1654,18 +1698,27 @@ static void gdo_main_task(void* arg) {
                     }
 
                     while(rx_pending) {
-                        if (uart_read_bytes(g_config.uart_num, rx_buffer, GDO_PACKET_SIZE, 0) == GDO_PACKET_SIZE) {
+                        int bytes_read = uart_read_bytes(g_config.uart_num, rx_buffer, GDO_PACKET_SIZE, 0);
+                        if (bytes_read == GDO_PACKET_SIZE) {
                             // check for the GDO packet start (0x55 0x01 0x00)
                             if (memcmp(rx_buffer, "\x55\x01\x00", 3) != 0) {
                                 ESP_LOGE(TAG, "RX data signature error: 0x%02x%02x%02x", rx_buffer[0], rx_buffer[1], rx_buffer[2]);
-                                rx_pending--;
-                                continue;
+                                v2_rx_resync(&rx_pending);
+                                break;
                             }
 
                             print_buffer(g_status.protocol, rx_buffer, false);
                             decode_packet(rx_buffer);
+                        } else if (bytes_read > 0) {
+                            // Consumed part of a frame, so the next read would start mid-frame.
+                            ESP_LOGE(TAG, "RX short read, %d bytes, %u pending messages.", bytes_read, rx_pending);
+                            v2_rx_resync(&rx_pending);
+                            break;
                         } else {
-                            ESP_LOGE(TAG, "RX buffer read error, %u pending messages.", rx_pending);
+                            // Nothing buffered, so the stream is still aligned. rx_pending over-counts
+                            // when line noise produces extra breaks, or when transmit_packet() flushed
+                            // bytes whose UART events are still queued.
+                            ESP_LOGD(TAG, "RX buffer empty, %u pending messages.", rx_pending);
                         }
                         --rx_pending;
                     }
