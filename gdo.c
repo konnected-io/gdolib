@@ -33,6 +33,7 @@ static void door_position_sync_timer_cb(void* arg);
 static void scheduled_cmd_timer_cb(void* arg);
 static void scheduled_event_timer_cb(void* arg);
 static void obst_timer_cb(void* arg);
+static void obst_verify_timer_cb(void* arg);
 static void get_paired_devices(gdo_paired_device_type_t type);
 static void update_light_state(gdo_light_state_t light_state);
 static void update_lock_state(gdo_lock_state_t lock_state);
@@ -103,6 +104,7 @@ static QueueHandle_t gdo_event_queue;
 static esp_timer_handle_t motion_detect_timer;
 static esp_timer_handle_t door_position_sync_timer;
 static esp_timer_handle_t obst_timer;
+static esp_timer_handle_t obst_verify_timer;
 static void *g_user_cb_arg;
 static uint32_t g_tx_delay_ms = 50;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
@@ -146,6 +148,13 @@ static const uint32_t OBST_TRAILING_EDGE_WINDOW_MS = 1000;
 // RX stream. Each request spends a rolling code, so a burst of line noise must not turn
 // into a burst of transmissions.
 static const uint32_t RX_RESYNC_STATUS_INTERVAL_MS = 3000;
+// While "obstructed", poll STATUS this long after the last trip and keep polling until it
+// reads clear. Every other repair path waits for a frame the opener sends unprompted, and
+// the opener transmits nothing while idle -- so a desync (a dropped or coalesced OBST_1
+// edge, a missing 0x09) would otherwise stick at "obstructed" until the next door move or
+// a reboot. Longer than both the ~4.4s STATUS lag and OBST_STATUS_CLEAR_GUARD_MS, so the
+// reply carries the current beam state and its "clear" is accepted.
+static const uint32_t OBST_VERIFY_INTERVAL_MS = 6000;
 
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
@@ -222,6 +231,17 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         timer_args.dispatch_method = ESP_TIMER_TASK;
         timer_args.name = "obst_timer";
         err = esp_timer_create(&timer_args, &obst_timer);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    if (g_config.obst_from_status) {
+        timer_args.callback = obst_verify_timer_cb;
+        timer_args.arg = NULL;
+        timer_args.dispatch_method = ESP_TIMER_TASK;
+        timer_args.name = "obst_verify_timer";
+        err = esp_timer_create(&timer_args, &obst_verify_timer);
         if (err != ESP_OK) {
             return err;
         }
@@ -306,6 +326,12 @@ esp_err_t gdo_deinit(void) {
     if (obst_timer) {
         esp_timer_delete(obst_timer);
         obst_timer = NULL;
+    }
+
+    if (obst_verify_timer) {
+        esp_timer_stop(obst_verify_timer);
+        esp_timer_delete(obst_verify_timer);
+        obst_verify_timer = NULL;
     }
 
     g_protocol_forced = false;
@@ -1091,6 +1117,22 @@ static void obst_timer_cb(void* arg) {
 */
 static void motion_detect_timer_cb(void* arg) {
     update_motion_state(GDO_MOTION_STATE_CLEAR);
+}
+
+/**
+ * @brief Started when obstruction (from status) goes to obstructed. While still obstructed,
+ * requests a STATUS every OBST_VERIFY_INTERVAL_MS so a desynced "obstructed" is repaired
+ * even when the opener is idle and sending nothing. decode_packet applies the reply.
+*/
+static void obst_verify_timer_cb(void* arg) {
+    if (g_status.obstruction != GDO_OBSTRUCTION_STATE_OBSTRUCTED ||
+        g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2) {
+        return;
+    }
+
+    ESP_LOGD(TAG, "Obstruction still set, requesting status to verify");
+    get_status();
+    esp_timer_start_once(obst_verify_timer, OBST_VERIFY_INTERVAL_MS * 1000);
 }
 
 /**
@@ -2073,6 +2115,12 @@ inline static void update_obstruction_state(gdo_obstruction_state_t obstruction_
     ESP_LOGD(TAG, "Obstruction state: %s", gdo_obstruction_state_to_string(obstruction_state));
     g_status.obstruction = obstruction_state;
     queue_event((gdo_event_t){GDO_EVENT_OBST});
+
+    // (Re)start the verify poll from this trip, so its first STATUS lands past the lag.
+    if (obstruction_state == GDO_OBSTRUCTION_STATE_OBSTRUCTED && obst_verify_timer) {
+        esp_timer_stop(obst_verify_timer);
+        esp_timer_start_once(obst_verify_timer, OBST_VERIFY_INTERVAL_MS * 1000);
+    }
 }
 
 /**
