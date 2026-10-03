@@ -1998,6 +1998,11 @@ static void get_paired_devices(gdo_paired_device_type_t type) {
  * @brief Gets the current status of the GDO.
 */
 inline static esp_err_t get_status() {
+    // Security+ 1.0 has no status request: the wall panel (or the emulation timer) polls
+    // status. Like learn and clear-paired, this is a Security+ 2.0-only command.
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     return queue_command(GDO_CMD_GET_STATUS, 0, 0, 0);
 }
 
