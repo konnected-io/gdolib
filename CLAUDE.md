@@ -17,9 +17,18 @@ idf.py build                 # produces build/esp-idf/gdolib/libgdolib.a
 idf.py -p <PORT> flash monitor
 ```
 
-There is no test suite, linter, or formatter configured. Requires ESP-IDF v4.4+.
+There is no linter or formatter configured. Requires ESP-IDF v4.4+.
 
 The component declares its sources in [CMakeLists.txt](CMakeLists.txt) (`gdo.c`, `gdo_utils.c`, `secplus.c`); new `.c` files must be added there or they will not be compiled.
+
+### Host tests
+
+```sh
+make -C tests/host                    # build and run
+GDO_TEST_LOG=1 make -C tests/host     # also print gdolib's ESP_LOGx output
+```
+
+[tests/host/](tests/host/) compiles the real `gdo.c` (by `#include`, so statics are reachable) against a small fake ESP-IDF in [tests/host/stubs/idf_fake.h](tests/host/stubs/idf_fake.h): a byte-accurate UART RX buffer, FIFO queues, and a settable clock. Timers and tasks are never run. Tests script opener traffic and drive the unmodified `gdo_main_task()`; the fake unwinds out of its `portMAX_DELAY` receive once the script is exhausted. Add a test here before changing RX/TX framing or the main loop.
 
 ### Debugging the protocol against a live opener
 
