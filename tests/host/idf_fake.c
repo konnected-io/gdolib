@@ -122,22 +122,107 @@ BaseType_t xTaskCreate(void (*fn)(void *), const char *name, uint32_t stack, voi
     return pdPASS;
 }
 void vTaskDelete(TaskHandle_t task) { (void)task; }
-void vTaskDelay(TickType_t ticks) { s_time_ms += ticks; }
+void vTaskDelay(TickType_t ticks) { fake_advance_to(s_time_ms + ticks); }
 BaseType_t xTaskNotifyGive(TaskHandle_t task) { (void)task; return pdPASS; }
 uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t ticks) { (void)clear; (void)ticks; return 0; }
 
-/* ---- timers: created and armed, but never fired ---- */
-struct fake_timer { int unused; };
+/* ---- timers: fired only by fake_advance_to() ---- */
+#define FAKE_MAX_TIMERS 128
+struct fake_timer {
+    void (*callback)(void *arg);
+    void *arg;
+    bool armed;
+    uint32_t deadline_ms;
+    uint32_t period_ms; // 0 = one-shot
+};
+// Deleted timers are disarmed but never freed, so a callback that deletes its own timer
+// (gdolib's scheduled commands do) can't leave fake_advance_to() holding a dangling pointer.
+static struct fake_timer *s_timers[FAKE_MAX_TIMERS];
+static int s_timer_count;
+
 int64_t esp_timer_get_time(void) { return (int64_t)s_time_ms * 1000; }
+
 esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle_t *out) {
-    (void)args;
-    *out = calloc(1, sizeof(struct fake_timer));
+    if (s_timer_count == FAKE_MAX_TIMERS) {
+        return ESP_ERR_NO_MEM;
+    }
+    struct fake_timer *t = calloc(1, sizeof(*t));
+    t->callback = args->callback;
+    t->arg = args->arg;
+    s_timers[s_timer_count++] = t;
+    *out = t;
     return ESP_OK;
 }
-esp_err_t esp_timer_start_once(esp_timer_handle_t t, uint64_t us) { (void)t; (void)us; return ESP_OK; }
-esp_err_t esp_timer_start_periodic(esp_timer_handle_t t, uint64_t us) { (void)t; (void)us; return ESP_OK; }
-esp_err_t esp_timer_stop(esp_timer_handle_t t) { (void)t; return ESP_OK; }
-esp_err_t esp_timer_delete(esp_timer_handle_t t) { free(t); return ESP_OK; }
+
+// Like ESP-IDF, a NULL handle is rejected rather than dereferenced.
+static esp_err_t timer_start(esp_timer_handle_t t, uint64_t us, bool periodic) {
+    if (!t) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (t->armed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    t->armed = true;
+    t->deadline_ms = s_time_ms + (uint32_t)(us / 1000);
+    t->period_ms = periodic ? (uint32_t)(us / 1000) : 0;
+    return ESP_OK;
+}
+
+esp_err_t esp_timer_start_once(esp_timer_handle_t t, uint64_t us) { return timer_start(t, us, false); }
+esp_err_t esp_timer_start_periodic(esp_timer_handle_t t, uint64_t us) { return timer_start(t, us, true); }
+
+esp_err_t esp_timer_stop(esp_timer_handle_t t) {
+    if (!t) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!t->armed) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    t->armed = false;
+    return ESP_OK;
+}
+
+esp_err_t esp_timer_delete(esp_timer_handle_t t) {
+    if (!t) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    t->armed = false;
+    t->callback = NULL;
+    return ESP_OK;
+}
+
+bool fake_fire_next_timer(uint32_t until_ms) {
+    struct fake_timer *next = NULL;
+    for (int i = 0; i < s_timer_count; i++) {
+        struct fake_timer *t = s_timers[i];
+        if (t->armed && t->deadline_ms <= until_ms && (!next || t->deadline_ms < next->deadline_ms)) {
+            next = t;
+        }
+    }
+    if (!next) {
+        return false;
+    }
+    if (next->deadline_ms > s_time_ms) {
+        s_time_ms = next->deadline_ms;
+    }
+    if (next->period_ms) {
+        next->deadline_ms += next->period_ms;
+    } else {
+        next->armed = false;
+    }
+    next->callback(next->arg);
+    return true;
+}
+
+void fake_advance_to(uint32_t ms) {
+    while (fake_fire_next_timer(ms)) {
+    }
+    if (ms > s_time_ms) {
+        s_time_ms = ms;
+    }
+}
+
+bool fake_timer_armed(esp_timer_handle_t t) { return t && t->armed; }
 
 /* ---- gpio ---- */
 esp_err_t gpio_config(const gpio_config_t *cfg) { (void)cfg; return ESP_OK; }
@@ -168,10 +253,19 @@ esp_err_t uart_driver_delete(uart_port_t num) { (void)num; return ESP_OK; }
 esp_err_t uart_set_baudrate(uart_port_t num, uint32_t baud) { (void)num; (void)baud; return ESP_OK; }
 esp_err_t uart_set_parity(uart_port_t num, uart_parity_t parity) { (void)num; (void)parity; return ESP_OK; }
 esp_err_t uart_wait_tx_done(uart_port_t num, TickType_t ticks) { (void)num; (void)ticks; return ESP_OK; }
+fake_tx_t fake_tx_log[FAKE_TX_LOG_MAX];
+int fake_tx_count;
+
 int uart_write_bytes(uart_port_t num, const void *buf, size_t len) {
-    (void)num; (void)buf;
+    (void)num;
     if (len == 19) {
         fake_uart_frames_written++;
+    }
+    if (fake_tx_count < FAKE_TX_LOG_MAX && len <= sizeof(fake_tx_log[0].bytes)) {
+        fake_tx_t *tx = &fake_tx_log[fake_tx_count++];
+        memcpy(tx->bytes, buf, len);
+        tx->len = len;
+        tx->at_ms = s_time_ms;
     }
     return (int)len;
 }
@@ -201,6 +295,7 @@ void fake_reset(void) {
     s_rx_head = s_rx_len = 0;
     fake_uart_flush_count = 0;
     fake_uart_frames_written = 0;
+    fake_tx_count = 0;
     fake_on_queue_send = NULL;
     fake_on_idle = NULL;
 }

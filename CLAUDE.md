@@ -28,7 +28,7 @@ make -C tests/host                    # build and run
 GDO_TEST_LOG=1 make -C tests/host     # also print gdolib's ESP_LOGx output
 ```
 
-[tests/host/](tests/host/) compiles the real `gdo.c` (by `#include`, so statics are reachable) against a small fake ESP-IDF in [tests/host/stubs/idf_fake.h](tests/host/stubs/idf_fake.h): a byte-accurate UART RX buffer, FIFO queues, and a settable clock. Timers and tasks are never run. Tests script opener traffic and drive the unmodified `gdo_main_task()`; the fake unwinds out of its `portMAX_DELAY` receive once the script is exhausted. Add a test here before changing RX/TX framing or the main loop.
+[tests/host/](tests/host/) compiles the real `gdo.c` (by `#include`, so statics are reachable) against a small fake ESP-IDF in [tests/host/stubs/idf_fake.h](tests/host/stubs/idf_fake.h): a byte-accurate UART RX buffer, FIFO queues, a log of UART writes, and a clock that fires due `esp_timer`s as it advances. Tasks are never started. The shared [tests/host/harness.h](tests/host/harness.h) starts the driver through the public API (setting `synced` directly, since the sync task doesn't run), scripts timed opener traffic, and drives the unmodified `gdo_main_task()`; the fake unwinds out of its `portMAX_DELAY` receive once the script is exhausted. Each test runs in a forked process so function-static state in `gdo.c` starts fresh. One binary per `test_*.c` (picked up automatically): `test_v2` and `test_v1` cover each protocol's decode and commands, `test_api` the lifecycle/setters and door position model, `test_rx_resync` Sec+ v2 RX framing. Add a test here before changing protocol handling or the main loop.
 
 ### Debugging the protocol against a live opener
 
