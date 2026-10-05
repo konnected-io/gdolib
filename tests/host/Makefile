@@ -5,7 +5,7 @@
 ROOT := ../..
 CC ?= cc
 CFLAGS ?= -std=gnu11 -g -O0 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
-          -Wno-missing-field-initializers -Wno-implicit-enum-enum-cast -fsanitize=address,undefined
+          -Wno-missing-field-initializers -Wno-enum-conversion -fsanitize=address,undefined
 CPPFLAGS := -Istubs -I$(ROOT)/include -I$(ROOT)
 
 BUILD := build
