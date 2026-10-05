@@ -1,0 +1,19 @@
+name: Host tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  host-tests:
+    name: Host tests (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run
+        run: make -C tests/host CC=${{ matrix.cc }}
