@@ -1583,46 +1583,6 @@ static void decode_packet(uint8_t *packet) {
 }
 
 /**
- * @brief Realigns the Sec+ v2 RX stream after a framing error.
- *
- * The RX loop reads fixed GDO_PACKET_SIZE frames, paced by UART_BREAK/UART_DATA events. If
- * that count ever disagrees with what is actually in the UART ring buffer (a noise fragment,
- * a dropped event), every later read straddles two frames and fails the signature check.
- * Nothing realigns it except the flush at the end of every transmit_packet(), and the opener
- * is silent while idle, so status silently stops updating until the next command is sent.
- *
- * Flushing lands the next read on a frame boundary; the opener retransmits every frame, so the
- * discarded one is normally received again. A rate-limited GET_STATUS covers the case where
- * it isn't.
- * @param rx_pending The main task's pending frame count, cleared since the flush drops them.
-*/
-static void v2_rx_resync(uint8_t *rx_pending) {
-    static uint32_t last_status_ms;
-    static bool status_requested;
-    uint32_t now = esp_timer_get_time() / 1000;
-
-    uart_flush_input(g_config.uart_num);
-    *rx_pending = 0;
-
-    if (!g_status.synced) {
-        return; // the sync task is already querying the opener
-    }
-
-    if (status_requested && now - last_status_ms < RX_RESYNC_STATUS_INTERVAL_MS) {
-        ESP_LOGD(TAG, "RX resync, GET_STATUS sent %" PRIu32 "ms ago", now - last_status_ms);
-        return;
-    }
-
-    status_requested = true;
-    last_status_ms = now;
-    ESP_LOGW(TAG, "RX stream misaligned, flushed and requesting status");
-    esp_err_t err = get_status();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to request status after RX resync: %s", esp_err_to_name(err));
-    }
-}
-
-/**
  * @brief Main task that handles all the events from the UART and other tasks.
 */
 static void gdo_main_task(void* arg) {
@@ -1634,8 +1594,28 @@ static void gdo_main_task(void* arg) {
     gdo_cb_event_t cb_event = GDO_CB_EVENT_MAX;
     esp_err_t err = ESP_OK;
     uint32_t last_tx_time = 0;
+    // Set when the Sec+ v2 RX stream was flushed to realign it after a framing error.
+    bool fetch_status = false;
+    uint32_t last_status_ms = 0;
 
     for (;;) {
+        // The flush may have dropped a frame; the opener normally retransmits it, but ask
+        // for status in case it didn't. Rate-limited since each request spends a rolling
+        // code, and skipped before sync since the sync task is already querying the opener.
+        if (fetch_status) {
+            fetch_status = false;
+            uint32_t now = esp_timer_get_time() / 1000;
+            if (g_status.synced && now - last_status_ms >= RX_RESYNC_STATUS_INTERVAL_MS) {
+                ESP_LOGW(TAG, "RX stream misaligned, flushed and requesting status");
+                err = get_status();
+                if (err == ESP_OK) {
+                    last_status_ms = now;
+                } else {
+                    ESP_LOGE(TAG, "Failed to request status after RX resync: %s", esp_err_to_name(err));
+                }
+            }
+        }
+
         if (xQueueReceive(gdo_event_queue, (void*)&event, (TickType_t)portMAX_DELAY)) {
             cb_event = GDO_CB_EVENT_MAX;
 
@@ -1703,7 +1683,11 @@ static void gdo_main_task(void* arg) {
                             // check for the GDO packet start (0x55 0x01 0x00)
                             if (memcmp(rx_buffer, "\x55\x01\x00", 3) != 0) {
                                 ESP_LOGE(TAG, "RX data signature error: 0x%02x%02x%02x", rx_buffer[0], rx_buffer[1], rx_buffer[2]);
-                                v2_rx_resync(&rx_pending);
+                                // Every later read would straddle two frames; flush to land the
+                                // next one on a frame boundary.
+                                uart_flush_input(g_config.uart_num);
+                                rx_pending = 0;
+                                fetch_status = true;
                                 break;
                             }
 
@@ -1712,7 +1696,9 @@ static void gdo_main_task(void* arg) {
                         } else if (bytes_read > 0) {
                             // Consumed part of a frame, so the next read would start mid-frame.
                             ESP_LOGE(TAG, "RX short read, %d bytes, %u pending messages.", bytes_read, rx_pending);
-                            v2_rx_resync(&rx_pending);
+                            uart_flush_input(g_config.uart_num);
+                            rx_pending = 0;
+                            fetch_status = true;
                             break;
                         } else {
                             // Nothing buffered, so the stream is still aligned. rx_pending over-counts
