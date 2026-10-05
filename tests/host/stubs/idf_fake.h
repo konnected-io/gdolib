@@ -19,7 +19,7 @@
  * Minimal host-side stand-in for the ESP-IDF / FreeRTOS APIs gdolib uses, so the real
  * gdo.c can be compiled and exercised on a development machine. Only the behaviour the
  * tests depend on is modelled: a byte-accurate UART RX ring buffer, FIFO queues, and a
- * settable clock. Timers and tasks are recorded but never run.
+ * clock that fires due esp_timers as it advances. Tasks are recorded but never run.
  */
 
 #ifndef IDF_FAKE_H
@@ -177,6 +177,13 @@ esp_err_t uart_flush_input(uart_port_t num);
 /* ---- test controls ---- */
 void fake_reset(void);
 void fake_set_time_ms(uint32_t ms);
+/* Moves the clock forward to ms, firing every armed esp_timer that falls due on the way, in
+ * deadline order and at its own deadline. Callbacks run synchronously. */
+void fake_advance_to(uint32_t ms);
+/* Fires only the earliest armed timer due at or before until_ms, moving the clock to its
+ * deadline. Returns false if none was due. */
+bool fake_fire_next_timer(uint32_t until_ms);
+bool fake_timer_armed(esp_timer_handle_t t);
 /* Appends bytes to the UART RX ring buffer, as if the opener had sent them. */
 void fake_uart_rx(const uint8_t *bytes, size_t len);
 size_t fake_uart_rx_available(void);
@@ -184,6 +191,16 @@ uint32_t fake_queue_depth(QueueHandle_t q);
 extern int fake_uart_flush_count;
 /* Writes of a whole Sec+ v2 frame; transmit_packet() flushes RX once after each. */
 extern int fake_uart_frames_written;
+/* Every uart_write_bytes() call, in order. A Sec+ v2 transmit is two writes: a single 0x00
+ * byte (sent at 6900 baud to fake a break), then the 19-byte frame. */
+#define FAKE_TX_LOG_MAX 128
+typedef struct {
+    uint8_t bytes[19];
+    size_t len;
+    uint32_t at_ms;
+} fake_tx_t;
+extern fake_tx_t fake_tx_log[FAKE_TX_LOG_MAX];
+extern int fake_tx_count;
 /* Runs fn (a never-returning task loop) until it blocks on an empty queue and fake_on_idle
  * (if set) declines to supply more work by returning false. */
 void fake_run_until_idle(void (*fn)(void *), void *arg);

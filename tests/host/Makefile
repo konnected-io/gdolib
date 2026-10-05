@@ -9,14 +9,14 @@ CFLAGS ?= -std=gnu11 -g -O0 -Wall -Wextra -Wno-unused-function -Wno-unused-param
 CPPFLAGS := -Istubs -I$(ROOT)/include -I$(ROOT)
 
 BUILD := build
-TESTS := $(BUILD)/test_rx_resync
+TESTS := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
 LIB_SRCS := idf_fake.c $(ROOT)/gdo_utils.c $(ROOT)/secplus.c
 
 .PHONY: test clean
 test: $(TESTS)
-	@for t in $(TESTS); do echo "== $$t"; ./$$t || exit 1; done
+	@rc=0; for t in $(TESTS); do echo "== $$t"; ./$$t || rc=1; done; exit $$rc
 
-$(BUILD)/%: %.c $(LIB_SRCS) $(ROOT)/gdo.c $(ROOT)/gdo_priv.h $(ROOT)/include/gdo.h stubs/idf_fake.h
+$(BUILD)/%: %.c $(LIB_SRCS) $(ROOT)/gdo.c $(ROOT)/gdo_priv.h $(ROOT)/include/gdo.h stubs/idf_fake.h harness.h
 	@mkdir -p $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LIB_SRCS)
 
