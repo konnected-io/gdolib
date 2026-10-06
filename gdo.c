@@ -57,7 +57,6 @@ static esp_err_t queue_v1_command(gdo_v1_command_t command);
 static esp_err_t schedule_command(gdo_sched_cmd_args_t *cmd_args, uint32_t time_us);
 static esp_err_t schedule_event(gdo_event_type_t event, uint32_t time_us);
 static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd);
-static esp_err_t gdo_park_tx_pin(void);
 static esp_err_t queue_event(gdo_event_t event);
 
 
@@ -255,9 +254,8 @@ esp_err_t gdo_init(const gdo_config_t *config) {
     // hold only now that the UART (already configured above, including inversion) owns
     // the pin: releasing it first would let the pad fall back to its default state, which
     // can include the pull-up, until uart_set_pin() ran.
-    err = gpio_hold_dis(g_config.uart_tx_pin);
-    if (err != ESP_OK) {
-        return err;
+    if (gpio_hold_dis(g_config.uart_tx_pin) != ESP_OK) {
+        ESP_LOGW(TAG, "Could not release the hold on TX pin %d", g_config.uart_tx_pin);
     }
 
     gdo_tx_queue = xQueueCreate(16, sizeof(gdo_tx_message_t));
@@ -337,9 +335,23 @@ esp_err_t gdo_deinit(void) {
     g_status.door_position = -1;
     g_status.door_target = -1;
 
-    err = gdo_park_tx_pin();
+    // Park TX at the UART idle level instead of gpio_reset_pin(), which enables the pull-up:
+    // with an inverted UART that is the "button pressed" level and holds it across a restart.
+    // Set the level, then route the pin to the GPIO output register (it is still muxed to the
+    // UART TX signal) and hold it, so it stays idle through a restart.
+    err = gpio_set_level(g_config.uart_tx_pin, g_config.invert_uart ? 0 : 1);
     if (err != ESP_OK) {
         goto done;
+    }
+
+    err = gpio_set_direction(g_config.uart_tx_pin, GPIO_MODE_OUTPUT);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    if (gpio_hold_en(g_config.uart_tx_pin) != ESP_OK) {
+        // Not fatal: the pin may not support hold; it is still parked until the restart.
+        ESP_LOGW(TAG, "Could not hold TX pin %d at idle", g_config.uart_tx_pin);
     }
 
     err = gpio_reset_pin(g_config.uart_rx_pin);
@@ -1265,43 +1277,6 @@ static esp_err_t schedule_event(gdo_event_type_t event, uint32_t time_us) {
     }
 
     return err;
-}
-
-/**
- * @brief Detaches the TX pin from the UART and holds it at the line's idle level.
- * @details gpio_reset_pin() leaves a pin as an input with its internal pull-up enabled.
- * On boards where TX drives a transistor that pulls the wall-control line low (ratgdo,
- * GDO blaQ), that pull-up turns the transistor on, and a Security+ 1.0 opener reads the
- * held line as a wall-button press for as long as it lasts. gdo_deinit() runs from
- * ESPHome's on_shutdown() before every OTA update or restart, so the door toggled on each
- * planned reboot. Drive the pin to the level the UART idles at instead (low when the line
- * is inverted), and hold it so it stays there through the restart until gdo_init()
- * releases it.
- * @return ESP_OK on success, otherwise an error code from the GPIO driver.
-*/
-static esp_err_t gdo_park_tx_pin(void) {
-    const gpio_num_t pin = g_config.uart_tx_pin;
-    const uint32_t idle_level = g_config.invert_uart ? 0 : 1;
-
-    // Deliberately not gpio_reset_pin(): it enables the pull-up, which is the problem.
-    // Latch the idle level first; gpio_set_direction() then routes the pad from the UART
-    // to the plain GPIO output, so the pin never passes through the active level.
-    esp_err_t err = gpio_set_level(pin, idle_level);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = gpio_set_pull_mode(pin, idle_level ? GPIO_PULLUP_ONLY : GPIO_PULLDOWN_ONLY);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = gpio_set_direction(pin, GPIO_MODE_OUTPUT);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    return gpio_hold_en(pin);
 }
 
 /**
