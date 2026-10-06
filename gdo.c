@@ -58,6 +58,7 @@ static esp_err_t queue_v1_command(gdo_v1_command_t command);
 static esp_err_t schedule_command(gdo_sched_cmd_args_t *cmd_args, uint32_t time_us);
 static esp_err_t schedule_event(gdo_event_type_t event, uint32_t time_us);
 static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd);
+static void v1_stop_timer_cb(void *arg);
 static esp_err_t queue_event(gdo_event_t event);
 
 
@@ -97,6 +98,11 @@ static gdo_status_t g_status = {
 static bool g_protocol_forced;
 static gdo_config_t g_config;
 static uint32_t g_door_start_moving_ms;
+// Security+ 1.0: time of the press that reversed a closing door for gdo_door_stop(); 0 if none.
+static uint32_t g_v1_stop_pending_ms;
+// Security+ 1.0 stop: presses left to send while the door still reports opening.
+static uint8_t g_v1_stop_presses_left;
+static esp_timer_handle_t g_v1_stop_timer;
 static TaskHandle_t gdo_main_task_handle;
 static TaskHandle_t gdo_sync_task_handle;
 static QueueHandle_t gdo_tx_queue;
@@ -123,6 +129,17 @@ static const uint32_t MOVE_TO_TARGET_NEAR_THRESHOLD = 200;
 // dance is taken — that dance schedules toggles at +500ms and +1000ms before
 // motion starts, so STOP needs to be pushed out to align the motor pulse.
 static const uint32_t MOVE_TO_TARGET_TOGGLE_DANCE_MS = 1000;
+// Security+ 1.0 stop while closing: the second press is sent only if the opener reports
+// opening within this window of the first. Past it the reversal is left alone (door opens).
+static const uint32_t V1_STOP_REVERSE_WINDOW_MS = 3000;
+// The opener stops on the first press, then about a second later reports opening and reverses.
+// The second press waits this long after that report: sent immediately it can land on the
+// wall panel's next poll and be lost (seen on hardware: no echo on the bus).
+static const uint32_t V1_STOP_PRESS_DELAY_MS = 400;
+// If the opener still reports opening this long after a press, press again. Status replies
+// arrive about once a second, so this leaves room for one before the next check.
+static const uint32_t V1_STOP_VERIFY_MS = 2000;
+static const uint8_t V1_STOP_MAX_PRESSES = 3;
 
 // Security+ 2.0 obstruction timing, measured on a live opener (see issue #28):
 //   - each frame is retransmitted ~74ms apart (same rolling code);
@@ -503,7 +520,15 @@ esp_err_t gdo_door_close(void) {
 */
 esp_err_t gdo_door_stop(void) {
     if (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING) {
-        return send_door_action(GDO_DOOR_ACTION_STOP);
+        esp_err_t err = send_door_action(GDO_DOOR_ACTION_STOP);
+        // Security+ 1.0 has no stop command, only the wall-button press, and the opener
+        // reverses on a press while closing. Press again once it reports opening; a press
+        // while opening stops it.
+        if (err == ESP_OK && (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) &&
+            g_status.door == GDO_DOOR_STATE_CLOSING) {
+            g_v1_stop_pending_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        }
+        return err;
     }
 
     return ESP_OK;
@@ -514,7 +539,10 @@ esp_err_t gdo_door_stop(void) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_door_toggle(void) {
-    if (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING) {
+    // On Security+ 1.0 a toggle is exactly one wall-button press, so it keeps the opener's
+    // own semantics (a press while closing reverses) rather than the two-press stop.
+    if (!(g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) &&
+        (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING)) {
         return gdo_door_stop();
     }
 
@@ -1171,6 +1199,27 @@ static void door_position_sync_timer_cb(void* arg) {
     }
 
     queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
+}
+
+/**
+ * @brief Security+ 1.0 stop while closing: presses the wall button while the door still reports
+ * opening after the reversal, verifying after each press, up to V1_STOP_MAX_PRESSES presses.
+*/
+static void v1_stop_timer_cb(void *arg) {
+    if (g_status.door != GDO_DOOR_STATE_OPENING || g_v1_stop_presses_left == 0) {
+        g_v1_stop_presses_left = 0;
+        return;
+    }
+
+    --g_v1_stop_presses_left;
+    ESP_LOGW(TAG, "Stop while closing: door still opening, pressing to stop (%u left)", g_v1_stop_presses_left);
+    if (send_door_action(GDO_DOOR_ACTION_STOP) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send the press to stop the door");
+    }
+
+    if (g_v1_stop_presses_left && esp_timer_start_once(g_v1_stop_timer, V1_STOP_VERIFY_MS * 1000) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to schedule the stop verification");
+    }
 }
 
 /**
@@ -1942,6 +1991,38 @@ static void update_door_state(const gdo_door_state_t door_state) {
     }
 
     ESP_LOGD(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
+
+    if (g_v1_stop_pending_ms) {
+        // The reversal can pass through STOPPED on its way to OPENING, so keep waiting then.
+        uint32_t elapsed = (uint32_t)(esp_timer_get_time() / 1000) - g_v1_stop_pending_ms;
+        if (door_state == GDO_DOOR_STATE_OPENING) {
+            g_v1_stop_pending_ms = 0;
+            if (elapsed <= V1_STOP_REVERSE_WINDOW_MS) {
+                ESP_LOGW(TAG, "Stop while closing: reversed after %" PRIu32 "ms, pressing again in %" PRIu32 "ms",
+                         elapsed, V1_STOP_PRESS_DELAY_MS);
+                esp_err_t err = ESP_OK;
+                if (!g_v1_stop_timer) {
+                    esp_timer_create_args_t timer_args = {
+                        .callback = v1_stop_timer_cb,
+                        .arg = NULL,
+                        .dispatch_method = ESP_TIMER_TASK,
+                        .name = "v1_stop_timer"
+                    };
+                    err = esp_timer_create(&timer_args, &g_v1_stop_timer);
+                }
+                if (err == ESP_OK) {
+                    esp_timer_stop(g_v1_stop_timer); // not running is fine
+                    g_v1_stop_presses_left = V1_STOP_MAX_PRESSES;
+                    err = esp_timer_start_once(g_v1_stop_timer, V1_STOP_PRESS_DELAY_MS * 1000);
+                }
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to schedule the press to stop the door: %s", esp_err_to_name(err));
+                }
+            }
+        } else if (door_state != GDO_DOOR_STATE_STOPPED || elapsed > V1_STOP_REVERSE_WINDOW_MS) {
+            g_v1_stop_pending_ms = 0;
+        }
+    }
 
     if (!g_status.open_ms) {
         if (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSED) {
