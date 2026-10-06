@@ -150,6 +150,7 @@ typedef struct {
     uint32_t rolling_code; // Rolling code
     bool toggle_only; // Used when the door opener only supports the toggle command.
     gdo_door_state_t last_move_direction; // Last move direction
+    bool inc_on_release; // Increment rolling code on release for devices that require it.
 } gdo_status_t;
 
 typedef struct {
@@ -418,6 +419,12 @@ esp_err_t gdo_set_min_command_interval(uint32_t ms);
  * @param toggle_only true to enable toggle only mode, false to disable.
  */
 void gdo_set_toggle_only(bool toggle_only);
+
+/**
+ * @brief Sets whether to increment the rolling code on release.
+ * @param inc_on_release true to increment on release, false otherwise.
+ */
+void gdo_set_increment_on_release(bool inc_on_release);
 
 #ifdef __cplusplus
 }
