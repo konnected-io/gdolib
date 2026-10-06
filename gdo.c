@@ -55,6 +55,9 @@ static esp_err_t transmit_packet(uint8_t *packet);
 static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t byte1, uint8_t byte2);
 static esp_err_t queue_v1_command(gdo_v1_command_t command);
 static esp_err_t schedule_command(gdo_sched_cmd_args_t *cmd_args, uint32_t time_us);
+static esp_err_t schedule_command_tracked(gdo_sched_cmd_args_t *cmd_args, uint32_t time_us,
+                                          gdo_sched_cmd_args_t **scheduled);
+static esp_err_t schedule_reverse_toggles(void);
 static esp_err_t schedule_event(gdo_event_type_t event, uint32_t time_us);
 static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd);
 static esp_err_t queue_event(gdo_event_t event);
@@ -427,17 +430,7 @@ esp_err_t gdo_door_open(void) {
         // If the door is stopped and the last move was opening, then the toggle command will make the door close.
         // So we need to send a toggle command to stop, then toggle again to open.
         if (g_status.door == GDO_DOOR_STATE_STOPPED && g_status.last_move_direction == GDO_DOOR_STATE_OPENING) {
-            gdo_sched_cmd_args_t args = {
-                .cmd = (uint32_t)GDO_DOOR_ACTION_TOGGLE,
-                .door_cmd = true,
-            };
-
-            esp_err_t err = schedule_command(&args, 500 * 1000);
-            if (err != ESP_OK) {
-                return err;
-            }
-
-            err = schedule_command(&args, 1000 * 1000);
+            esp_err_t err = schedule_reverse_toggles();
             if (err != ESP_OK) {
                 return err;
             }
@@ -464,17 +457,7 @@ esp_err_t gdo_door_close(void) {
         // If the door is stopped and the last move was closing, then the toggle command will make the door open.
         // So we need to send a toggle command to stop, then toggle again to close.
         if (g_status.door == GDO_DOOR_STATE_STOPPED && g_status.last_move_direction == GDO_DOOR_STATE_CLOSING) {
-            gdo_sched_cmd_args_t args = {
-                .cmd = (uint32_t)GDO_DOOR_ACTION_TOGGLE,
-                .door_cmd = true,
-            };
-
-            esp_err_t err = schedule_command(&args, 500 * 1000);
-            if (err != ESP_OK) {
-                return err;
-            }
-
-            err = schedule_command(&args, 1000 * 1000);
+            esp_err_t err = schedule_reverse_toggles();
             if (err != ESP_OK) {
                 return err;
             }
@@ -1203,6 +1186,16 @@ static void scheduled_event_timer_cb(void* arg) {
  * @param time_us The time in microseconds to send the command, must be more than 50 microseconds.
 */
 static esp_err_t schedule_command(gdo_sched_cmd_args_t *cmd_args, uint32_t time_us) {
+    return schedule_command_tracked(cmd_args, time_us, NULL);
+}
+
+/**
+ * @brief Same as schedule_command, optionally returning the scheduled args (which own the timer)
+ * so the caller can cancel the command before it fires.
+ * @param scheduled If not NULL, set to the allocated args on success.
+*/
+static esp_err_t schedule_command_tracked(gdo_sched_cmd_args_t *cmd_args, uint32_t time_us,
+                                          gdo_sched_cmd_args_t **scheduled) {
     esp_err_t err = ESP_OK;
     if (!cmd_args || time_us < 50) {
         return ESP_ERR_INVALID_ARG;
@@ -1232,10 +1225,46 @@ static esp_err_t schedule_command(gdo_sched_cmd_args_t *cmd_args, uint32_t time_
 
     err = esp_timer_start_once(args->timer, time_us);
     if (err != ESP_OK) {
+        esp_timer_delete(args->timer);
         free(args);
+        return err;
     }
 
-    return err;
+    if (scheduled) {
+        *scheduled = args;
+    }
+
+    return ESP_OK;
+}
+
+/**
+ * @brief In toggle_only mode, schedules the two extra toggles (at +500 ms and +1000 ms) that follow
+ * an immediate toggle to reverse a stopped door's next direction. Either both are scheduled or neither:
+ * if the second fails, the first is cancelled so a lone toggle cannot move the door the wrong way.
+*/
+static esp_err_t schedule_reverse_toggles(void) {
+    gdo_sched_cmd_args_t args = {
+        .cmd = (uint32_t)GDO_DOOR_ACTION_TOGGLE,
+        .door_cmd = true,
+    };
+    gdo_sched_cmd_args_t *first = NULL;
+
+    esp_err_t err = schedule_command_tracked(&args, 500 * 1000, &first);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = schedule_command(&args, 1000 * 1000);
+    if (err != ESP_OK) {
+        // Stop succeeds only if the timer has not fired; otherwise the callback owns and frees it.
+        if (esp_timer_stop(first->timer) == ESP_OK) {
+            esp_timer_delete(first->timer);
+            free(first);
+        }
+        return err;
+    }
+
+    return ESP_OK;
 }
 
 /**
