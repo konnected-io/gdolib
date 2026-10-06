@@ -246,13 +246,16 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         }
     }
 
-    // gdo_deinit() may have left TX held at its idle level across a restart.
-    err = gpio_hold_dis(g_config.uart_tx_pin);
+    err = uart_set_pin(g_config.uart_num, g_config.uart_tx_pin, g_config.uart_rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) {
         return err;
     }
 
-    err = uart_set_pin(g_config.uart_num, g_config.uart_tx_pin, g_config.uart_rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    // gdo_deinit() may have left TX held at its idle level across a restart. Release the
+    // hold only now that the UART (already configured above, including inversion) owns
+    // the pin: releasing it first would let the pad fall back to its default state, which
+    // can include the pull-up, until uart_set_pin() ran.
+    err = gpio_hold_dis(g_config.uart_tx_pin);
     if (err != ESP_OK) {
         return err;
     }
