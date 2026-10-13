@@ -138,6 +138,27 @@ static void test_press_and_poll_in_one_read(void) {
     CHECK_EQ(g_status.door, GDO_DOOR_STATE_OPEN);
 }
 
+/* Bench capture of an opener refusing a close (beam blocked): our press/release echoes share
+ * a read with the next poll, whose STOPPED reply (0x30) is itself in the command range. The
+ * reply must stay paired with its query so STOPPED, then OPEN, both reach the callback. */
+static void test_refused_close_reply_between_echoes(void) {
+    start_v1();
+    opener_v1(0, V1_CMD_QUERY_DOOR_STATUS, 0x52); // open
+    step_t *s = add_step(250);
+    static const uint8_t bytes[] = {V1_CMD_TOGGLE_DOOR_PRESS, V1_CMD_QUERY_DOOR_STATUS, 0x30,
+                                    V1_CMD_TOGGLE_DOOR_RELEASE};
+    add_bytes(s, bytes, sizeof(bytes));
+    s->data_size = sizeof(bytes);
+    run();
+    CHECK_EQ(g_status.door, GDO_DOOR_STATE_STOPPED);
+    CHECK_EQ(g_status.button, GDO_BUTTON_STATE_RELEASED);
+
+    opener_v1(1000, V1_CMD_QUERY_DOOR_STATUS, 0x52);
+    run();
+    CHECK_EQ(g_status.door, GDO_DOOR_STATE_OPEN);
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_DOOR_POSITION], 3);
+}
+
 static void test_leading_garbage_byte_is_skipped(void) {
     start_v1();
     step_t *s = add_step(0);
@@ -250,6 +271,7 @@ RUN_TESTS(
     TEST(test_press_release_between_polls),
     TEST(test_press_release_straddling_poll),
     TEST(test_press_and_poll_in_one_read),
+    TEST(test_refused_close_reply_between_echoes),
     TEST(test_leading_garbage_byte_is_skipped),
     TEST(test_packet_split_across_reads),
     TEST(test_panel_query_0x37_asks_for_other_status),
