@@ -226,8 +226,23 @@ bool fake_timer_armed(esp_timer_handle_t t) { return t && t->armed; }
 
 /* ---- gpio ---- */
 esp_err_t gpio_config(const gpio_config_t *cfg) { (void)cfg; return ESP_OK; }
-esp_err_t gpio_reset_pin(gpio_num_t pin) { (void)pin; return ESP_OK; }
+fake_gpio_t fake_gpio[GPIO_NUM_MAX];
+
+esp_err_t gpio_reset_pin(gpio_num_t pin) {
+    fake_gpio[pin] = (fake_gpio_t){.level = -1, .mode = GPIO_MODE_INPUT, .pulled_up = true};
+    return ESP_OK;
+}
 int gpio_get_level(gpio_num_t pin) { (void)pin; return 0; }
+esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level) {
+    fake_gpio[pin].level = (int)level;
+    return ESP_OK;
+}
+esp_err_t gpio_set_direction(gpio_num_t pin, gpio_mode_t mode) {
+    fake_gpio[pin].mode = mode;
+    return ESP_OK;
+}
+esp_err_t gpio_hold_en(gpio_num_t pin) { fake_gpio[pin].held = true; return ESP_OK; }
+esp_err_t gpio_hold_dis(gpio_num_t pin) { fake_gpio[pin].held = false; return ESP_OK; }
 esp_err_t gpio_install_isr_service(int flags) { (void)flags; return ESP_OK; }
 esp_err_t gpio_isr_handler_add(gpio_num_t pin, void (*isr)(void *), void *arg) {
     (void)pin; (void)isr; (void)arg;
@@ -298,6 +313,9 @@ void fake_reset(void) {
     fake_tx_count = 0;
     fake_on_queue_send = NULL;
     fake_on_idle = NULL;
+    for (int i = 0; i < GPIO_NUM_MAX; i++) {
+        fake_gpio[i] = (fake_gpio_t){.level = -1};
+    }
 }
 
 void fake_set_time_ms(uint32_t ms) { s_time_ms = ms; }
