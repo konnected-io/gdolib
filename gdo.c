@@ -1760,34 +1760,32 @@ static void gdo_main_task(void* arg) {
                     }
 
                     rx_buf_index += bytes_read;
+                    uint8_t i = 0;
+                    while (i < rx_buf_index) {
+                        uint8_t pkt[2] = {rx_buffer[i], 0};
+                        if (pkt[0] <= V1_CMD_MIN || pkt[0] >= V1_CMD_MAX) {
+                            i++;
+                            continue;
+                        }
 
-                    if (rx_buf_index >= GDO_PACKET_SIZE) {
-                        uint8_t i = 0;
-                        bool odd = rx_buf_index % 2 != 0;
-                        if (odd) {
-                            if (rx_buffer[0] <= V1_CMD_MIN || rx_buffer[0] >= V1_CMD_MAX) {
-                                i = 1; // Skip first byte if it's not a valid command
-                            } else {
-                                // Decrement the buffer index so we don't over read the buffer in the loop
-                                --rx_buf_index;
+                        if (pkt[0] > V1_CMD_TOGGLE_MAX) { // Process command with response (two byte)
+                            if (i + 1 < rx_buf_index) {
+                                pkt[1] = rx_buffer[++i];
+                            } else { // Incomplete packet, stop here and wait for more data
+                                break;
                             }
                         }
 
-                        uint8_t pkt[2];
-                        for (; i < rx_buf_index; i += 2) {
-                            pkt[0] = rx_buffer[i];
-                            pkt[1] = rx_buffer[i + 1];
-                            print_buffer(g_status.protocol, pkt, false);
-                            decode_v1_packet(pkt);
-                        }
+                        i++;
+                        print_buffer(g_status.protocol, pkt, false);
+                        decode_v1_packet(pkt);
+                    }
 
-                        // if we decremented the buffer index then we need to move the last byte to the start
-                        if (odd && rx_buf_index % 2 == 0) {
-                            rx_buffer[0] = rx_buffer[rx_buf_index];
-                            rx_buf_index = 1;
-                        } else {
-                            rx_buf_index = 0;
-                        }
+                    if (i < rx_buf_index) { // There are still unprocessed bytes in the buffer
+                        memmove(rx_buffer, &rx_buffer[i], rx_buf_index - i);
+                        rx_buf_index -= i;
+                    } else {
+                        rx_buf_index = 0;
                     }
                 }
 
