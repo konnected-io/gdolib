@@ -34,6 +34,8 @@ static void scheduled_cmd_timer_cb(void* arg);
 static void scheduled_event_timer_cb(void* arg);
 static void obst_timer_cb(void* arg);
 static void obst_verify_timer_cb(void* arg);
+static void heartbeat_timer_cb(void* arg);
+static void heartbeat_check(void);
 static void get_paired_devices(gdo_paired_device_type_t type);
 static void update_light_state(gdo_light_state_t light_state);
 static void update_lock_state(gdo_lock_state_t lock_state);
@@ -105,6 +107,7 @@ static esp_timer_handle_t motion_detect_timer;
 static esp_timer_handle_t door_position_sync_timer;
 static esp_timer_handle_t obst_timer;
 static esp_timer_handle_t obst_verify_timer;
+static esp_timer_handle_t heartbeat_timer;
 static void *g_user_cb_arg;
 static uint32_t g_tx_delay_ms = 50;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
@@ -155,6 +158,22 @@ static const uint32_t RX_RESYNC_STATUS_INTERVAL_MS = 3000;
 // a reboot. Longer than both the ~4.4s STATUS lag and OBST_STATUS_CLEAR_GUARD_MS, so the
 // reply carries the current beam state and its "clear" is accepted.
 static const uint32_t OBST_VERIFY_INTERVAL_MS = 6000;
+// Security+ 2.0 is event driven and the opener transmits nothing while idle, so a broken
+// wire looks exactly like a quiet garage. Once the line has been silent this long, ask for
+// STATUS to prove the opener is still there.
+static const uint32_t HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+// How long to wait for a reply to a heartbeat STATUS request before asking again. The
+// opener answers within one 250ms sync-task cycle, so this is generous.
+static const uint32_t HEARTBEAT_REPLY_TIMEOUT_MS = 2000;
+// Unanswered heartbeat requests in a row before the opener is considered lost. A single
+// reply can be lost to a TX collision or an RX resync flush.
+static const uint8_t HEARTBEAT_MAX_PROBES = 3;
+
+// Time of the last valid frame received from the opener (Sec+ v2 only).
+static uint32_t g_last_rx_ms;
+// Set when the heartbeat found the opener unresponsive after a successful sync. `synced` is
+// false while this is set; the next valid frame from the opener clears both.
+static bool g_link_lost;
 
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
@@ -247,6 +266,15 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         }
     }
 
+    timer_args.callback = heartbeat_timer_cb;
+    timer_args.arg = NULL;
+    timer_args.dispatch_method = ESP_TIMER_TASK;
+    timer_args.name = "heartbeat_timer";
+    err = esp_timer_create(&timer_args, &heartbeat_timer);
+    if (err != ESP_OK) {
+        return err;
+    }
+
     // Begin in secplus protocol v1 as its the easiest to detect.
     uart_config_t uart_config = {
         .baud_rate  = 1200,
@@ -334,6 +362,14 @@ esp_err_t gdo_deinit(void) {
         obst_verify_timer = NULL;
     }
 
+    if (heartbeat_timer) {
+        esp_timer_stop(heartbeat_timer);
+        esp_timer_delete(heartbeat_timer);
+        heartbeat_timer = NULL;
+    }
+
+    g_link_lost = false;
+    g_last_rx_ms = 0;
     g_protocol_forced = false;
     g_status.synced = false;
     g_status.protocol = 0;
@@ -425,10 +461,12 @@ esp_err_t gdo_get_status(gdo_status_t *status) {
 /**
  * @brief Starts the task that syncs the state of the GDO with the controller.
  * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, ESP_ERR_NOT_FINISHED if the task is already running,
- * ESP_ERR_INVALID_STATE if the driver is not started or already synced.
+ * ESP_ERR_INVALID_STATE if the driver is not started, already synced, or the opener has stopped responding.
 */
 esp_err_t gdo_sync(void) {
-    if (!gdo_main_task_handle || g_status.synced) { // using this as a proxy for the driver being started
+    // While the heartbeat has the opener marked lost, it owns recovery: the sync task would
+    // see the door state it already has and report synced without hearing from the opener.
+    if (!gdo_main_task_handle || g_status.synced || g_link_lost) { // using this as a proxy for the driver being started
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -825,7 +863,7 @@ esp_err_t gdo_clear_paired_devices(gdo_paired_device_type_t type) {
  * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the GDO is already synced.
 */
 esp_err_t gdo_set_rolling_code(uint32_t rolling_code) {
-    if (g_status.synced) {
+    if (g_status.synced || g_link_lost) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -839,7 +877,7 @@ esp_err_t gdo_set_rolling_code(uint32_t rolling_code) {
  * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the GDO is already synced.
 */
 esp_err_t gdo_set_client_id(uint32_t client_id) {
-    if (g_status.synced) {
+    if (g_status.synced || g_link_lost) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -1133,6 +1171,53 @@ static void obst_verify_timer_cb(void* arg) {
     ESP_LOGD(TAG, "Obstruction still set, requesting status to verify");
     get_status();
     esp_timer_start_once(obst_verify_timer, OBST_VERIFY_INTERVAL_MS * 1000);
+}
+
+/**
+ * @brief Hands the heartbeat check to gdo_main_task, which also stamps g_last_rx_ms and
+ * clears g_link_lost, so the two cannot race.
+*/
+static void heartbeat_timer_cb(void* arg) {
+    queue_event((gdo_event_t){GDO_EVENT_HEARTBEAT});
+}
+
+/**
+ * @brief Detects a Security+ 2.0 opener that has stopped responding (issue #47). Runs in
+ * gdo_main_task, first armed when sync completes. If the line has been quiet for HEARTBEAT_INTERVAL_MS, requests STATUS and
+ * re-checks after HEARTBEAT_REPLY_TIMEOUT_MS; after HEARTBEAT_MAX_PROBES unanswered requests,
+ * clears `synced` and fires GDO_CB_EVENT_SYNCED. While lost it keeps asking once per interval
+ * so an idle opener that comes back is noticed; decode_packet restores `synced` on its reply.
+*/
+static void heartbeat_check(void) {
+    static uint8_t probes = 0;
+    uint32_t idle_ms = esp_timer_get_time() / 1000 - g_last_rx_ms;
+
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2 || (!g_status.synced && !g_link_lost)) {
+        probes = 0;
+        return;
+    }
+
+    if (idle_ms < HEARTBEAT_INTERVAL_MS) {
+        probes = 0;
+        esp_timer_start_once(heartbeat_timer, (uint64_t)(HEARTBEAT_INTERVAL_MS - idle_ms) * 1000);
+        return;
+    }
+
+    if (!g_link_lost && probes >= HEARTBEAT_MAX_PROBES) {
+        ESP_LOGE(TAG, "No response from opener in %" PRIu32 "ms, marking unsynced", idle_ms);
+        g_link_lost = true;
+        g_status.synced = false;
+        queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
+    }
+
+    ESP_LOGD(TAG, "Line idle for %" PRIu32 "ms, requesting status", idle_ms);
+    get_status();
+    if (g_link_lost) {
+        esp_timer_start_once(heartbeat_timer, HEARTBEAT_INTERVAL_MS * 1000);
+    } else {
+        probes++;
+        esp_timer_start_once(heartbeat_timer, HEARTBEAT_REPLY_TIMEOUT_MS * 1000);
+    }
 }
 
 /**
@@ -1514,6 +1599,14 @@ static void decode_packet(uint8_t *packet) {
         ESP_LOGI(TAG, "received rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
     }
 
+    g_last_rx_ms = time_now;
+    if (g_link_lost) {
+        ESP_LOGI(TAG, "Opener responding again, marking synced");
+        g_link_lost = false;
+        g_status.synced = true;
+        queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
+    }
+
     gdo_command_t cmd = ((fixed >> 24) & 0xf00) | (data & 0xff);
     uint8_t nibble = (data >> 8) & 0xff;
     uint8_t byte1 = (data >> 16) & 0xff;
@@ -1868,6 +1961,15 @@ static void gdo_main_task(void* arg) {
             }
             case GDO_EVENT_SYNC_COMPLETE:
                 cb_event = GDO_CB_EVENT_SYNCED;
+                // Watch the line from here on. Not on a loss: heartbeat_check keeps its own
+                // slower poll running while the opener is unresponsive.
+                if (g_status.synced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+                    esp_timer_stop(heartbeat_timer);
+                    esp_timer_start_once(heartbeat_timer, HEARTBEAT_INTERVAL_MS * 1000);
+                }
+                break;
+            case GDO_EVENT_HEARTBEAT:
+                heartbeat_check();
                 break;
             case GDO_EVENT_OBST:
                 cb_event = GDO_CB_EVENT_OBSTRUCTION;

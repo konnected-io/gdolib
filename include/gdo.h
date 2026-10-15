@@ -101,7 +101,7 @@ typedef enum {
 } gdo_protocol_type_t;
 
 typedef enum {
-    GDO_CB_EVENT_SYNCED = 0,
+    GDO_CB_EVENT_SYNCED = 0, // Sync finished, or (Sec+ v2) the opener stopped/resumed responding; check status->synced
     GDO_CB_EVENT_OBSTRUCTION,
     GDO_CB_EVENT_DOOR_POSITION,
     GDO_CB_EVENT_LIGHT,
@@ -139,7 +139,7 @@ typedef struct {
     gdo_battery_state_t battery; // Battery state
     gdo_learn_state_t learn; // Learn state
     gdo_paired_device_t paired_devices; // Paired devices
-    bool synced; // Synced state
+    bool synced; // Synced state; on Sec+ v2, cleared again if the opener stops responding to status requests
     uint16_t openings; // Number of openings
     uint16_t ttc_seconds; // Time to close in seconds
     uint16_t open_ms; // Time door takes to open from fully closed in milliseconds
@@ -201,7 +201,9 @@ esp_err_t gdo_get_status(gdo_status_t *status);
 
 /**
  * @brief Starts the task that syncs the state of the GDO with the controller.
- * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, ESP_ERR_NOT_FINISHED if the task is already running.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if task creation fails, ESP_ERR_NOT_FINISHED if the task is already running,
+ * ESP_ERR_INVALID_STATE if the driver is not started, already synced, or the opener has stopped responding
+ * (the driver keeps polling it and restores `synced` on its own once it replies).
 */
 esp_err_t gdo_sync(void);
 
