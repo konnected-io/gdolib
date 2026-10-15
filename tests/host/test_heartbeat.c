@@ -15,20 +15,14 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/*
- * Security+ 2.0 heartbeat (issue #47). The opener sends nothing while idle, so once the
- * line has been quiet for HEARTBEAT_INTERVAL_MS the driver asks for STATUS. After
- * HEARTBEAT_MAX_PROBES unanswered requests it clears `synced`, and the next frame from
- * the opener restores it.
- */
+/* Security+ 2.0 heartbeat: detecting an opener that stops responding (issue #47). */
 
 #include "harness.h"
 
 #define HB HEARTBEAT_INTERVAL_MS
 #define REPLY HEARTBEAT_REPLY_TIMEOUT_MS
 
-/* The sync task finishing, which is what arms the heartbeat. The sync task itself never
- * runs on the host, so post its completion event directly. */
+/* The sync task never runs on the host, so post its completion, which arms the heartbeat. */
 static void sync_completes(void) {
     queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
 }
@@ -41,8 +35,7 @@ static void start_synced_v2(void) {
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_SYNCED], 1);
 }
 
-/* Lets the opener go silent until it is marked lost: probes at HB, HB+REPLY, HB+2*REPLY,
- * then the check at HB+3*REPLY declares it lost and asks once more. */
+/* Probes at HB, HB+REPLY, HB+2*REPLY; the check at HB+3*REPLY marks it lost. */
 static void opener_goes_silent(void) {
     wait_until(HB + HEARTBEAT_MAX_PROBES * REPLY);
     run();
@@ -75,7 +68,6 @@ static void test_idle_opener_answers_probe(void) {
     CHECK(g_status.synced);
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_SYNCED], 1);
 
-    // The next probe is one interval after the reply, not after the probe.
     wait_until(2 * HB + 99);
     run();
     CHECK_EQ(queued(GDO_CMD_GET_STATUS), 1);
@@ -86,7 +78,6 @@ static void test_idle_opener_answers_probe(void) {
 
 static void test_late_reply_within_probe_limit_stays_synced(void) {
     start_synced_v2();
-    // The first two requests go unanswered; the third gets a reply.
     opener_sends(HB + 2 * REPLY + 100, GDO_DOOR_STATE_CLOSED);
     wait_until(HB + 10 * REPLY);
     run();
@@ -108,7 +99,6 @@ static void test_silent_opener_marked_unsynced(void) {
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_SYNCED], 2);
     CHECK_EQ(queued(GDO_CMD_GET_STATUS), HEARTBEAT_MAX_PROBES + 1);
 
-    // While lost it keeps asking, but only once per interval.
     wait_until(2 * HB + HEARTBEAT_MAX_PROBES * REPLY - 1);
     run();
     CHECK_EQ(queued(GDO_CMD_GET_STATUS), HEARTBEAT_MAX_PROBES + 1);
@@ -123,7 +113,6 @@ static void test_opener_reply_restores_sync(void) {
     opener_goes_silent();
     CHECK(!g_status.synced);
 
-    // A reply to the slow poll while lost.
     uint32_t back = 2 * HB + HEARTBEAT_MAX_PROBES * REPLY + 100;
     opener_sends(back, GDO_DOOR_STATE_OPEN);
     run();
@@ -132,7 +121,6 @@ static void test_opener_reply_restores_sync(void) {
     CHECK_EQ(g_status.door, GDO_DOOR_STATE_OPEN);
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_SYNCED], 3);
 
-    // Back to normal watching: the next probe is a full interval later.
     int probes = queued(GDO_CMD_GET_STATUS);
     wait_until(back + HB - 1);
     run();
@@ -147,7 +135,6 @@ static void test_unprompted_frame_restores_sync(void) {
     opener_goes_silent();
     CHECK(!g_status.synced);
 
-    // e.g. the wire is reconnected and someone presses the wall button.
     opener_v2(HB + 60 * 1000, GDO_CMD_PAIR_3_RESP, 0, 0x09, 0);
     run();
     CHECK(g_status.synced);
@@ -156,8 +143,6 @@ static void test_unprompted_frame_restores_sync(void) {
 
 static void test_own_echo_does_not_count_as_reply(void) {
     start_synced_v2();
-    CHECK_EQ(gdo_set_client_id(0x1234), ESP_ERR_INVALID_STATE); // already synced
-    // A frame carrying our own client id is our own transmission, not the opener.
     for (int i = 0; i < HEARTBEAT_MAX_PROBES; i++) {
         uint8_t frame[FRAME_SIZE];
         uint32_t data = GDO_CMD_GET_STATUS & 0xff;

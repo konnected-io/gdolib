@@ -158,21 +158,13 @@ static const uint32_t RX_RESYNC_STATUS_INTERVAL_MS = 3000;
 // a reboot. Longer than both the ~4.4s STATUS lag and OBST_STATUS_CLEAR_GUARD_MS, so the
 // reply carries the current beam state and its "clear" is accepted.
 static const uint32_t OBST_VERIFY_INTERVAL_MS = 6000;
-// Security+ 2.0 is event driven and the opener transmits nothing while idle, so a broken
-// wire looks exactly like a quiet garage. Once the line has been silent this long, ask for
-// STATUS to prove the opener is still there.
+// The Sec+ v2 opener sends nothing while idle, so a quiet line has to be probed to tell a
+// dead link from an idle garage.
 static const uint32_t HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
-// How long to wait for a reply to a heartbeat STATUS request before asking again. The
-// opener answers within one 250ms sync-task cycle, so this is generous.
 static const uint32_t HEARTBEAT_REPLY_TIMEOUT_MS = 2000;
-// Unanswered heartbeat requests in a row before the opener is considered lost. A single
-// reply can be lost to a TX collision or an RX resync flush.
 static const uint8_t HEARTBEAT_MAX_PROBES = 3;
 
-// Time of the last valid frame received from the opener (Sec+ v2 only).
 static uint32_t g_last_rx_ms;
-// Set when the heartbeat found the opener unresponsive after a successful sync. `synced` is
-// false while this is set; the next valid frame from the opener clears both.
 static bool g_link_lost;
 
 
@@ -464,8 +456,8 @@ esp_err_t gdo_get_status(gdo_status_t *status) {
  * ESP_ERR_INVALID_STATE if the driver is not started, already synced, or the opener has stopped responding.
 */
 esp_err_t gdo_sync(void) {
-    // While the heartbeat has the opener marked lost, it owns recovery: the sync task would
-    // see the door state it already has and report synced without hearing from the opener.
+    // While lost, the sync task would report synced from cached state without hearing from
+    // the opener; the heartbeat handles recovery instead.
     if (!gdo_main_task_handle || g_status.synced || g_link_lost) { // using this as a proxy for the driver being started
         return ESP_ERR_INVALID_STATE;
     }
@@ -1173,21 +1165,11 @@ static void obst_verify_timer_cb(void* arg) {
     esp_timer_start_once(obst_verify_timer, OBST_VERIFY_INTERVAL_MS * 1000);
 }
 
-/**
- * @brief Hands the heartbeat check to gdo_main_task, which also stamps g_last_rx_ms and
- * clears g_link_lost, so the two cannot race.
-*/
+// Runs the check in gdo_main_task so it can't race decode_packet over g_link_lost.
 static void heartbeat_timer_cb(void* arg) {
     queue_event((gdo_event_t){GDO_EVENT_HEARTBEAT});
 }
 
-/**
- * @brief Detects a Security+ 2.0 opener that has stopped responding (issue #47). Runs in
- * gdo_main_task, first armed when sync completes. If the line has been quiet for HEARTBEAT_INTERVAL_MS, requests STATUS and
- * re-checks after HEARTBEAT_REPLY_TIMEOUT_MS; after HEARTBEAT_MAX_PROBES unanswered requests,
- * clears `synced` and fires GDO_CB_EVENT_SYNCED. While lost it keeps asking once per interval
- * so an idle opener that comes back is noticed; decode_packet restores `synced` on its reply.
-*/
 static void heartbeat_check(void) {
     static uint8_t probes = 0;
     uint32_t idle_ms = esp_timer_get_time() / 1000 - g_last_rx_ms;
@@ -1961,8 +1943,6 @@ static void gdo_main_task(void* arg) {
             }
             case GDO_EVENT_SYNC_COMPLETE:
                 cb_event = GDO_CB_EVENT_SYNCED;
-                // Watch the line from here on. Not on a loss: heartbeat_check keeps its own
-                // slower poll running while the opener is unresponsive.
                 if (g_status.synced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
                     esp_timer_stop(heartbeat_timer);
                     esp_timer_start_once(heartbeat_timer, HEARTBEAT_INTERVAL_MS * 1000);
