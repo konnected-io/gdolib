@@ -151,6 +151,10 @@ static int rx_resyncs(void) {
     return fake_uart_flush_count - fake_uart_frames_written;
 }
 
+static uint32_t t0(void) {
+    return 1000000;
+}
+
 /* Brings the driver up through the public API, as a host project would. The sync task is
  * created but never runs on the host, so the synced flag is set directly. */
 static void start_gdo(gdo_test_opts_t opts) {
@@ -161,6 +165,7 @@ static void start_gdo(gdo_test_opts_t opts) {
         .uart_rx_pin = 21,
         .obst_in_pin = -1,
     };
+    fake_set_time_ms(t0());
     if (opts.protocol) {
         CHECK_EQ(gdo_set_protocol(opts.protocol), ESP_OK);
     }
@@ -172,7 +177,6 @@ static void start_gdo(gdo_test_opts_t opts) {
     fake_uart_flush_count = 0;
     fake_uart_frames_written = 0;
     fake_tx_count = 0;
-    fake_set_time_ms(1000000);
 }
 
 static void start_v2(void) {
@@ -200,10 +204,6 @@ static step_t s_steps[MAX_STEPS];
 static int s_step_count, s_next_step;
 static uint32_t s_opener_rolling = 0x1000;
 
-static uint32_t t0(void) {
-    return 1000000;
-}
-
 static void post_uart_event(uart_event_type_t type, size_t size) {
     gdo_event_t ev = {0};
     ev.uart_event.type = type;
@@ -211,15 +211,19 @@ static void post_uart_event(uart_event_type_t type, size_t size) {
     xQueueSend(gdo_event_queue, &ev, 0);
 }
 
-static bool feed_next_step(void) {
+static fake_idle_t feed_next_step(uint32_t until_ms) {
     if (s_next_step >= s_step_count) {
-        return false;
+        return FAKE_IDLE_DONE;
     }
     step_t *s = &s_steps[s_next_step];
+    uint32_t at = t0() + s->at_ms;
     // Fire timers due before this step one at a time, so the task handles whatever each
     // one queued (e.g. a paced TX) at its own time, before the step's bytes arrive.
-    if (fake_fire_next_timer(t0() + s->at_ms)) {
-        return true;
+    if (fake_fire_next_timer(at < until_ms ? at : until_ms)) {
+        return FAKE_IDLE_FED;
+    }
+    if (at > until_ms) {
+        return FAKE_IDLE_NOT_YET;
     }
     s_next_step++;
     fake_set_time_ms(t0() + s->at_ms);
@@ -233,7 +237,7 @@ static bool feed_next_step(void) {
     if (s->data_size) {
         post_uart_event(UART_DATA, s->data_size);
     }
-    return true;
+    return FAKE_IDLE_FED;
 }
 
 static step_t *add_step(uint32_t at_ms) {

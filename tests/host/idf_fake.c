@@ -24,7 +24,7 @@ bool fake_log_enabled;
 int fake_uart_flush_count;
 int fake_uart_frames_written;
 void (*fake_on_queue_send)(QueueHandle_t q, const void *item);
-bool (*fake_on_idle)(void);
+fake_idle_t (*fake_on_idle)(uint32_t until_ms);
 
 static uint32_t s_time_ms;
 static jmp_buf s_idle_jmp;
@@ -85,12 +85,21 @@ BaseType_t xQueueSend(QueueHandle_t q, const void *item, TickType_t ticks) {
 }
 
 BaseType_t xQueueReceive(QueueHandle_t q, void *item, TickType_t ticks) {
+    uint32_t until = ticks == portMAX_DELAY ? UINT32_MAX : s_time_ms + ticks;
     while (q->count == 0) {
-        if (ticks != portMAX_DELAY || !s_running) {
+        if (ticks == 0 || !s_running) {
             return pdFALSE;
         }
-        if (!fake_on_idle || !fake_on_idle()) {
+        fake_idle_t idle = fake_on_idle ? fake_on_idle(until) : FAKE_IDLE_DONE;
+        if (idle == FAKE_IDLE_DONE) {
             longjmp(s_idle_jmp, 1);
+        }
+        if (idle == FAKE_IDLE_NOT_YET) {
+            fake_advance_to(until);
+        }
+        // Like FreeRTOS, only report a timeout once the full wait has elapsed.
+        if (q->count == 0 && s_time_ms >= until) {
+            return pdFALSE;
         }
     }
     memcpy(item, q->items + q->head * q->item_size, q->item_size);
