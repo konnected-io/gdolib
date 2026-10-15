@@ -48,7 +48,7 @@ static void update_ttc(uint16_t ttc_seconds);
 static void update_paired_devices(gdo_paired_device_type_t type, uint8_t count);
 static void update_battery_state(gdo_battery_state_t battery_state);
 static void update_door_state(const gdo_door_state_t door_state);
-static void decode_packet(uint8_t *packet);
+static bool decode_packet(uint8_t *packet);
 static esp_err_t get_status();
 static esp_err_t get_openings();
 static esp_err_t send_door_action(gdo_door_action_t action);
@@ -156,6 +156,8 @@ static const uint32_t RX_RESYNC_STATUS_INTERVAL_MS = 3000;
 // reply carries the current beam state and its "clear" is accepted.
 static const uint32_t OBST_VERIFY_INTERVAL_MS = 6000;
 
+static const uint32_t HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+static const uint32_t HEARTBEAT_REPLY_TIMEOUT_MS = 2000;
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -1475,7 +1477,7 @@ static void decode_v1_packet(uint8_t *packet) {
  * @brief Decodes a packet received from the GDO and updates the status.
  * @param packet The packet received from the GDO.
 */
-static void decode_packet(uint8_t *packet) {
+static bool decode_packet(uint8_t *packet) {
     uint32_t rolling = 0;
     uint64_t fixed = 0;
     uint32_t data = 0;
@@ -1502,14 +1504,14 @@ static void decode_packet(uint8_t *packet) {
 
     if (decode_wireline(packet, &rolling, &fixed, &data) != 0) {
         ESP_LOGD(TAG, "Failed to decode wireline frame; dropping");
-        return;
+        return false;
     }
 
     data &= ~0xf000;
 
     if ((fixed & 0xFFFFFFFF) == g_status.client_id) { // my commands
         ESP_LOGE(TAG, "received mine: rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
-        return;
+        return false;
     } else {
         ESP_LOGI(TAG, "received rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
     }
@@ -1622,6 +1624,8 @@ static void decode_packet(uint8_t *packet) {
     } else {
         ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
     }
+
+    return true;
 }
 
 /**
@@ -1639,6 +1643,7 @@ static void gdo_main_task(void* arg) {
     // Set when the Sec+ v2 RX stream was flushed to realign it after a framing error.
     bool fetch_status = false;
     uint32_t last_status_ms = 0;
+    TickType_t queue_wait_time = portMAX_DELAY;
 
     for (;;) {
         // The flush may have dropped a frame; the opener normally retransmits it, but ask
@@ -1648,17 +1653,17 @@ static void gdo_main_task(void* arg) {
             fetch_status = false;
             uint32_t now = esp_timer_get_time() / 1000;
             if (g_status.synced && now - last_status_ms >= RX_RESYNC_STATUS_INTERVAL_MS) {
-                ESP_LOGW(TAG, "RX stream misaligned, flushed and requesting status");
                 err = get_status();
-                if (err == ESP_OK) {
-                    last_status_ms = now;
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to fetch status %s", esp_err_to_name(err));
                 } else {
-                    ESP_LOGE(TAG, "Failed to request status after RX resync: %s", esp_err_to_name(err));
+                    last_status_ms = now;
+                    queue_wait_time = pdMS_TO_TICKS(HEARTBEAT_REPLY_TIMEOUT_MS);
                 }
             }
         }
 
-        if (xQueueReceive(gdo_event_queue, (void*)&event, (TickType_t)portMAX_DELAY)) {
+        if (xQueueReceive(gdo_event_queue, (void*)&event, queue_wait_time)) {
             cb_event = GDO_CB_EVENT_MAX;
 
             switch ((int)event.gdo_event) {
@@ -1677,6 +1682,7 @@ static void gdo_main_task(void* arg) {
                     } else if (rx_packet_size == 20 || rx_packet_size == 19 || rx_pending) {
                         ESP_LOGD(TAG, "Received %u bytes, using protocol V2", rx_packet_size);
                         g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
+                        queue_wait_time = pdMS_TO_TICKS(HEARTBEAT_INTERVAL_MS);
                     } else {
                         ESP_LOGD(TAG, "Received %u bytes, unknown protocol", rx_packet_size);
                         uart_flush(g_config.uart_num);
@@ -1734,7 +1740,9 @@ static void gdo_main_task(void* arg) {
                             }
 
                             print_buffer(g_status.protocol, rx_buffer, false);
-                            decode_packet(rx_buffer);
+                            if (decode_packet(rx_buffer)) {
+                                queue_wait_time = pdMS_TO_TICKS(HEARTBEAT_INTERVAL_MS);
+                            }
                         } else if (bytes_read > 0) {
                             // Consumed part of a frame, so the next read would start mid-frame.
                             ESP_LOGE(TAG, "RX short read, %d bytes, %u pending messages.", bytes_read, rx_pending);
@@ -1917,6 +1925,20 @@ static void gdo_main_task(void* arg) {
             if (cb_event < GDO_CB_EVENT_MAX && g_event_callback) {
                 g_event_callback(&g_status, cb_event, g_user_cb_arg);
             }
+        } else { // No event received within the queue wait time
+            if (queue_wait_time == pdMS_TO_TICKS(HEARTBEAT_REPLY_TIMEOUT_MS)) {
+                ESP_LOGE(TAG, "No event received within the fetch status interval");
+                g_status.synced = false;
+                g_status.door = GDO_DOOR_STATE_UNKNOWN;
+                g_status.openings = 0;
+                memset(&g_status.paired_devices, GDO_PAIRED_DEVICE_COUNT_UNKNOWN, sizeof(g_status.paired_devices));
+                gdo_sync();
+                queue_wait_time = portMAX_DELAY;
+                continue;
+            }
+
+            ESP_LOGI(TAG, "No event received within the queue wait time, fetching status");
+            fetch_status = true;
         }
     }
 
