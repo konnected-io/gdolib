@@ -34,8 +34,7 @@ static void scheduled_cmd_timer_cb(void* arg);
 static void scheduled_event_timer_cb(void* arg);
 static void obst_timer_cb(void* arg);
 static void obst_verify_timer_cb(void* arg);
-static void heartbeat_timer_cb(void* arg);
-static void heartbeat_check(void);
+static TickType_t heartbeat_check(void);
 static void get_paired_devices(gdo_paired_device_type_t type);
 static void update_light_state(gdo_light_state_t light_state);
 static void update_lock_state(gdo_lock_state_t lock_state);
@@ -107,7 +106,6 @@ static esp_timer_handle_t motion_detect_timer;
 static esp_timer_handle_t door_position_sync_timer;
 static esp_timer_handle_t obst_timer;
 static esp_timer_handle_t obst_verify_timer;
-static esp_timer_handle_t heartbeat_timer;
 static void *g_user_cb_arg;
 static uint32_t g_tx_delay_ms = 50;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
@@ -258,15 +256,6 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         }
     }
 
-    timer_args.callback = heartbeat_timer_cb;
-    timer_args.arg = NULL;
-    timer_args.dispatch_method = ESP_TIMER_TASK;
-    timer_args.name = "heartbeat_timer";
-    err = esp_timer_create(&timer_args, &heartbeat_timer);
-    if (err != ESP_OK) {
-        return err;
-    }
-
     // Begin in secplus protocol v1 as its the easiest to detect.
     uart_config_t uart_config = {
         .baud_rate  = 1200,
@@ -354,12 +343,6 @@ esp_err_t gdo_deinit(void) {
         obst_verify_timer = NULL;
     }
 
-    if (heartbeat_timer) {
-        esp_timer_stop(heartbeat_timer);
-        esp_timer_delete(heartbeat_timer);
-        heartbeat_timer = NULL;
-    }
-
     g_link_lost = false;
     g_last_rx_ms = 0;
     g_protocol_forced = false;
@@ -419,6 +402,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg) {
     }
 
     uart_flush(g_config.uart_num);
+    g_last_rx_ms = esp_timer_get_time() / 1000;
 
     if (xTaskCreate(gdo_main_task, "gdo_main_task", 4096, NULL, 15, &gdo_main_task_handle) != pdPASS) {
         return ESP_ERR_NO_MEM;
@@ -1165,24 +1149,32 @@ static void obst_verify_timer_cb(void* arg) {
     esp_timer_start_once(obst_verify_timer, OBST_VERIFY_INTERVAL_MS * 1000);
 }
 
-// Runs the check in gdo_main_task so it can't race decode_packet over g_link_lost.
-static void heartbeat_timer_cb(void* arg) {
-    queue_event((gdo_event_t){GDO_EVENT_HEARTBEAT});
+// Rounded up so the receive can't time out just short of the deadline and spin.
+static TickType_t ms_to_ticks_ceil(uint32_t ms) {
+    return pdMS_TO_TICKS(ms + portTICK_PERIOD_MS - 1);
 }
 
-static void heartbeat_check(void) {
+// Probes a quiet Sec+ v2 line and returns how long gdo_main_task may block before the next
+// check. Runs in gdo_main_task so it can't race decode_packet over g_link_lost.
+static TickType_t heartbeat_check(void) {
     static uint8_t probes = 0;
-    uint32_t idle_ms = esp_timer_get_time() / 1000 - g_last_rx_ms;
+    static uint32_t last_probe_ms = 0;
+    uint32_t now = esp_timer_get_time() / 1000;
+    uint32_t idle_ms = now - g_last_rx_ms;
 
     if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2 || (!g_status.synced && !g_link_lost)) {
         probes = 0;
-        return;
+        return portMAX_DELAY;
     }
 
     if (idle_ms < HEARTBEAT_INTERVAL_MS) {
         probes = 0;
-        esp_timer_start_once(heartbeat_timer, (uint64_t)(HEARTBEAT_INTERVAL_MS - idle_ms) * 1000);
-        return;
+        return ms_to_ticks_ceil(HEARTBEAT_INTERVAL_MS - idle_ms);
+    }
+
+    uint32_t interval_ms = g_link_lost ? HEARTBEAT_INTERVAL_MS : HEARTBEAT_REPLY_TIMEOUT_MS;
+    if (probes && now - last_probe_ms < interval_ms) {
+        return ms_to_ticks_ceil(interval_ms - (now - last_probe_ms));
     }
 
     if (!g_link_lost && probes >= HEARTBEAT_MAX_PROBES) {
@@ -1190,16 +1182,16 @@ static void heartbeat_check(void) {
         g_link_lost = true;
         g_status.synced = false;
         queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
+        interval_ms = HEARTBEAT_INTERVAL_MS;
     }
 
     ESP_LOGD(TAG, "Line idle for %" PRIu32 "ms, requesting status", idle_ms);
     get_status();
-    if (g_link_lost) {
-        esp_timer_start_once(heartbeat_timer, HEARTBEAT_INTERVAL_MS * 1000);
-    } else {
+    last_probe_ms = now;
+    if (probes < HEARTBEAT_MAX_PROBES) {
         probes++;
-        esp_timer_start_once(heartbeat_timer, HEARTBEAT_REPLY_TIMEOUT_MS * 1000);
     }
+    return ms_to_ticks_ceil(interval_ms);
 }
 
 /**
@@ -1733,7 +1725,7 @@ static void gdo_main_task(void* arg) {
             }
         }
 
-        if (xQueueReceive(gdo_event_queue, (void*)&event, (TickType_t)portMAX_DELAY)) {
+        if (xQueueReceive(gdo_event_queue, (void*)&event, heartbeat_check())) {
             cb_event = GDO_CB_EVENT_MAX;
 
             switch ((int)event.gdo_event) {
@@ -1943,13 +1935,6 @@ static void gdo_main_task(void* arg) {
             }
             case GDO_EVENT_SYNC_COMPLETE:
                 cb_event = GDO_CB_EVENT_SYNCED;
-                if (g_status.synced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
-                    esp_timer_stop(heartbeat_timer);
-                    esp_timer_start_once(heartbeat_timer, HEARTBEAT_INTERVAL_MS * 1000);
-                }
-                break;
-            case GDO_EVENT_HEARTBEAT:
-                heartbeat_check();
                 break;
             case GDO_EVENT_OBST:
                 cb_event = GDO_CB_EVENT_OBSTRUCTION;

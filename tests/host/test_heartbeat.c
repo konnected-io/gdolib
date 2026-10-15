@@ -22,7 +22,7 @@
 #define HB HEARTBEAT_INTERVAL_MS
 #define REPLY HEARTBEAT_REPLY_TIMEOUT_MS
 
-/* The sync task never runs on the host, so post its completion, which arms the heartbeat. */
+/* The sync task never runs on the host, so post its completion. */
 static void sync_completes(void) {
     queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
 }
@@ -49,7 +49,6 @@ static void test_busy_line_sends_no_probes(void) {
     run();
     CHECK_EQ(queued(GDO_CMD_GET_STATUS), 0);
     CHECK(g_status.synced);
-    CHECK(fake_timer_armed(heartbeat_timer));
 }
 
 static void test_idle_opener_answers_probe(void) {
@@ -171,11 +170,10 @@ static void test_setters_and_sync_rejected_while_lost(void) {
     CHECK_EQ(g_status.rolling_code, rolling);
 }
 
-static void test_not_armed_until_synced(void) {
+static void test_no_probes_until_synced(void) {
     start_gdo((gdo_test_opts_t){ .protocol = GDO_PROTOCOL_SEC_PLUS_V2, .synced = false });
     wait_until(5 * HB);
     run();
-    CHECK(!fake_timer_armed(heartbeat_timer));
     CHECK_EQ(queued(GDO_CMD_GET_STATUS), 0);
 }
 
@@ -184,20 +182,16 @@ static void test_no_heartbeat_on_sec_plus_v1(void) {
     sync_completes();
     wait_until(5 * HB);
     run();
-    CHECK(!fake_timer_armed(heartbeat_timer));
+    CHECK_EQ(queued(GDO_CMD_GET_STATUS), 0);
     CHECK(g_status.synced);
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_SYNCED], 1);
 }
 
-static void test_deinit_stops_and_resets(void) {
+static void test_deinit_resets(void) {
     start_synced_v2();
     opener_goes_silent();
-    esp_timer_handle_t timer = heartbeat_timer;
-    CHECK(fake_timer_armed(timer));
 
     CHECK_EQ(gdo_deinit(), ESP_OK);
-    CHECK(heartbeat_timer == NULL);
-    CHECK(!fake_timer_armed(timer));
     CHECK(!g_link_lost);
     CHECK_EQ(g_last_rx_ms, 0);
 }
@@ -211,7 +205,7 @@ RUN_TESTS(
     TEST(test_unprompted_frame_restores_sync),
     TEST(test_own_echo_does_not_count_as_reply),
     TEST(test_setters_and_sync_rejected_while_lost),
-    TEST(test_not_armed_until_synced),
+    TEST(test_no_probes_until_synced),
     TEST(test_no_heartbeat_on_sec_plus_v1),
-    TEST(test_deinit_stops_and_resets)
+    TEST(test_deinit_resets)
 )
