@@ -133,7 +133,12 @@ BaseType_t xTaskCreate(void (*fn)(void *), const char *name, uint32_t stack, voi
 void vTaskDelete(TaskHandle_t task) { (void)task; }
 void vTaskDelay(TickType_t ticks) { fake_advance_to(s_time_ms + ticks); }
 BaseType_t xTaskNotifyGive(TaskHandle_t task) { (void)task; return pdPASS; }
-uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t ticks) { (void)clear; (void)ticks; return 0; }
+TickType_t fake_last_notify_timeout;
+uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t ticks) {
+    (void)clear;
+    fake_last_notify_timeout = ticks;
+    return 0;
+}
 
 /* ---- timers: fired only by fake_advance_to() ---- */
 #define FAKE_MAX_TIMERS 128
@@ -306,6 +311,7 @@ void fake_reset(void) {
     fake_uart_flush_count = 0;
     fake_uart_frames_written = 0;
     fake_tx_count = 0;
+    fake_last_notify_timeout = 0;
     fake_on_queue_send = NULL;
     fake_on_idle = NULL;
 }

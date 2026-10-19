@@ -72,6 +72,7 @@ The `gdo_tx_queue` handle doubles as the "is initialized" flag (see `gdo_init` /
 4. If the opener still doesn't respond → switch to 9600 baud, no parity (`GDO_PROTOCOL_SEC_PLUS_V2`) and run the v2 sync handshake (`GET_STATUS` → `GET_OPENINGS` → `GET_PAIRED_DEVICES`).
 
 Callers can short-circuit this by calling `gdo_set_protocol()` before `gdo_start()` (sets `g_protocol_forced`). For Sec+ v2 they should also call `gdo_set_client_id()` and `gdo_set_rolling_code()` from persisted storage before `gdo_start()` — otherwise the rolling code starts at 0 and the opener will reject commands.
+If `GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL` is explicitly selected, startup listens at the V1 UART settings without transmitting or trying either emulation path. Sync waits up to 5 seconds (`V1_SMART_PANEL_SYNC_TIMEOUT_MS`) for panel status; on timeout it logs an error and reports sync complete with `synced == false`. If the panel is heard later, `update_door_state()` completes the sync itself.
 
 Packet sizing is protocol-dependent: `GDO_PACKET_SIZE` ([gdo_priv.h:30](gdo_priv.h#L30)) returns 19 for v2, 2 for v1.
 

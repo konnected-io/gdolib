@@ -94,7 +94,8 @@ typedef enum {
 } gdo_paired_device_type_t;
 
 typedef enum {
-    GDO_PROTOCOL_SEC_PLUS_V1 = 1,
+    GDO_PROTOCOL_UNKNOWN = 0,
+    GDO_PROTOCOL_SEC_PLUS_V1,
     GDO_PROTOCOL_SEC_PLUS_V2,
     GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL,
     GDO_PROTOCOL_MAX,
