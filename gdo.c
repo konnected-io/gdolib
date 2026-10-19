@@ -168,6 +168,8 @@ static const uint32_t OBST_VERIFY_INTERVAL_MS = 6000;
 static const uint32_t HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 static const uint32_t HEARTBEAT_REPLY_TIMEOUT_MS = 2000;
 
+static const uint32_t V1_SMART_PANEL_SYNC_TIMEOUT_MS = 5000;
+
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -969,8 +971,18 @@ static void gdo_sync_task(void* arg) {
         uart_flush(g_config.uart_num);
         xQueueReset(gdo_event_queue);
 
-        // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
-        ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
+        if (g_protocol_forced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL) {
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(V1_SMART_PANEL_SYNC_TIMEOUT_MS));
+            if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+                ESP_LOGE(TAG, "Smart wall panel not detected within 5 minutes");
+                synced = false;
+            } else {
+                ESP_LOGI(TAG, "Smart wall panel found");
+            }
+            goto done;
+        }
+
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2500));
 
         if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
             ESP_LOGW(TAG, "V1 panel not found, trying emulation");
@@ -1414,6 +1426,10 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (g_protocol_forced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     gdo_tx_message_t message;
     message.cmd = command;
     message.packet = (uint8_t*)malloc(19); // will be freed in the gdo_main_task
@@ -1449,6 +1465,10 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
  * @return ESP_OK on success, other non-zero errors from the UART driver.
 */
 static esp_err_t transmit_packet(uint8_t *packet) {
+    if (g_protocol_forced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     esp_err_t err = ESP_OK;
 
     if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
@@ -2053,6 +2073,8 @@ static void update_door_state(const gdo_door_state_t door_state) {
         return;
     }
 
+    bool was_door_unknown = g_status.door == GDO_DOOR_STATE_UNKNOWN;
+
     ESP_LOGD(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
 
     bool close_reversed = g_close_reversing && door_state == GDO_DOOR_STATE_OPENING;
@@ -2152,13 +2174,14 @@ static void update_door_state(const gdo_door_state_t door_state) {
         g_status.door_target = g_status.door_position;
     }
 
-    if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
+    g_status.door = door_state;
+
+    if (was_door_unknown &&
         g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1 &&
         gdo_sync_task_handle) {
         xTaskNotifyGive(gdo_sync_task_handle);
     }
 
-    g_status.door = door_state;
     queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
 }
 
