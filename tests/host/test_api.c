@@ -109,7 +109,7 @@ static void test_forced_smart_panel_is_receive_only_and_times_out(void) {
     CHECK_EQ(fake_tx_count, 0);
 
     gdo_sync_task(NULL);
-    CHECK_EQ(fake_last_notify_timeout, pdMS_TO_TICKS(5 * 60 * 1000));
+    CHECK_EQ(fake_last_notify_timeout, pdMS_TO_TICKS(V1_SMART_PANEL_SYNC_TIMEOUT_MS));
     CHECK(!g_status.synced);
     CHECK_EQ(g_status.protocol, GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL);
     CHECK_EQ(fake_tx_count, 0);
