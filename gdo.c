@@ -939,7 +939,7 @@ static void gdo_sync_task(void* arg) {
         if (g_protocol_forced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(V1_SMART_PANEL_SYNC_TIMEOUT_MS));
             if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
-                ESP_LOGE(TAG, "Smart wall panel not detected within 5 minutes");
+                ESP_LOGE(TAG, "Smart wall panel not detected within %" PRIu32 " ms", V1_SMART_PANEL_SYNC_TIMEOUT_MS);
                 synced = false;
             } else {
                 ESP_LOGI(TAG, "Smart wall panel found");
