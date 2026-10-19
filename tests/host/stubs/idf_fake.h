@@ -86,6 +86,7 @@ void vTaskDelete(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
 BaseType_t xTaskNotifyGive(TaskHandle_t task);
 uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t ticks);
+extern TickType_t fake_last_notify_timeout;
 
 /* ---- esp_timer ---- */
 typedef struct fake_timer *esp_timer_handle_t;
