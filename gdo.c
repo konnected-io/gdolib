@@ -48,7 +48,7 @@ static void update_ttc(uint16_t ttc_seconds);
 static void update_paired_devices(gdo_paired_device_type_t type, uint8_t count);
 static void update_battery_state(gdo_battery_state_t battery_state);
 static void update_door_state(const gdo_door_state_t door_state);
-static void decode_packet(uint8_t *packet);
+static bool decode_packet(uint8_t *packet);
 static esp_err_t get_status();
 static esp_err_t get_openings();
 static esp_err_t send_door_action(gdo_door_action_t action);
@@ -155,6 +155,10 @@ static const uint32_t RX_RESYNC_STATUS_INTERVAL_MS = 3000;
 // a reboot. Longer than both the ~4.4s STATUS lag and OBST_STATUS_CLEAR_GUARD_MS, so the
 // reply carries the current beam state and its "clear" is accepted.
 static const uint32_t OBST_VERIFY_INTERVAL_MS = 6000;
+// A Sec+ v2 opener is silent while idle, so probe it with GET_STATUS after this long
+// without a frame, and resync if nothing arrives within the reply timeout.
+static const uint32_t HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+static const uint32_t HEARTBEAT_REPLY_TIMEOUT_MS = 2000;
 
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
@@ -1474,8 +1478,9 @@ static void decode_v1_packet(uint8_t *packet) {
 /**
  * @brief Decodes a packet received from the GDO and updates the status.
  * @param packet The packet received from the GDO.
+ * @return true if the packet was a valid frame sent by another device on the bus.
 */
-static void decode_packet(uint8_t *packet) {
+static bool decode_packet(uint8_t *packet) {
     uint32_t rolling = 0;
     uint64_t fixed = 0;
     uint32_t data = 0;
@@ -1502,14 +1507,14 @@ static void decode_packet(uint8_t *packet) {
 
     if (decode_wireline(packet, &rolling, &fixed, &data) != 0) {
         ESP_LOGD(TAG, "Failed to decode wireline frame; dropping");
-        return;
+        return false;
     }
 
     data &= ~0xf000;
 
     if ((fixed & 0xFFFFFFFF) == g_status.client_id) { // my commands
         ESP_LOGE(TAG, "received mine: rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
-        return;
+        return false;
     } else {
         ESP_LOGI(TAG, "received rolling=%07" PRIx32 " fixed=%010" PRIx64 " data=%08" PRIx32, rolling, fixed, data);
     }
@@ -1622,6 +1627,8 @@ static void decode_packet(uint8_t *packet) {
     } else {
         ESP_LOGD(TAG, "Unhandled command: %03x (%s)", cmd, cmd_to_string(cmd));
     }
+
+    return true;
 }
 
 /**
@@ -1639,6 +1646,9 @@ static void gdo_main_task(void* arg) {
     // Set when the Sec+ v2 RX stream was flushed to realign it after a framing error.
     bool fetch_status = false;
     uint32_t last_status_ms = 0;
+    uint32_t last_rx_ms = esp_timer_get_time() / 1000;
+    bool heartbeat_pending = false;
+    uint32_t heartbeat_ms = 0;
 
     for (;;) {
         // The flush may have dropped a frame; the opener normally retransmits it, but ask
@@ -1658,7 +1668,44 @@ static void gdo_main_task(void* arg) {
             }
         }
 
-        if (xQueueReceive(gdo_event_queue, (void*)&event, (TickType_t)portMAX_DELAY)) {
+        TickType_t wait = portMAX_DELAY;
+        if (g_status.synced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+            uint32_t now = esp_timer_get_time() / 1000;
+            if (!heartbeat_pending && now - last_rx_ms >= HEARTBEAT_INTERVAL_MS) {
+                ESP_LOGI(TAG, "Opener idle for %" PRIu32 "s, requesting status", (now - last_rx_ms) / 1000);
+                heartbeat_pending = true;
+                heartbeat_ms = now;
+                err = get_status();
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to request heartbeat status: %s", esp_err_to_name(err));
+                }
+            }
+
+            if (heartbeat_pending && now - heartbeat_ms >= HEARTBEAT_REPLY_TIMEOUT_MS) {
+                ESP_LOGE(TAG, "No reply from the opener, resyncing");
+                heartbeat_pending = false;
+                // Breaks from a floating line are never followed by data, so this would
+                // otherwise stay non-zero and hold every sync command in the collision check.
+                rx_pending = 0;
+                g_status.synced = false;
+                g_status.door = GDO_DOOR_STATE_UNKNOWN;
+                g_status.openings = 0;
+                memset(&g_status.paired_devices, GDO_PAIRED_DEVICE_COUNT_UNKNOWN, sizeof(g_status.paired_devices));
+                err = gdo_sync();
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to start resync: %s", esp_err_to_name(err));
+                }
+            } else {
+                uint32_t due = heartbeat_pending ? heartbeat_ms + HEARTBEAT_REPLY_TIMEOUT_MS
+                                                 : last_rx_ms + HEARTBEAT_INTERVAL_MS;
+                // Absolute deadlines, since a disconnected line reads as busy and the probe's
+                // 150ms collision retries keep the queue from ever going quiet. +1 so a
+                // sub-tick remainder doesn't spin on a zero timeout.
+                wait = pdMS_TO_TICKS(due - now) + 1;
+            }
+        }
+
+        if (xQueueReceive(gdo_event_queue, (void*)&event, wait)) {
             cb_event = GDO_CB_EVENT_MAX;
 
             switch ((int)event.gdo_event) {
@@ -1734,7 +1781,10 @@ static void gdo_main_task(void* arg) {
                             }
 
                             print_buffer(g_status.protocol, rx_buffer, false);
-                            decode_packet(rx_buffer);
+                            if (decode_packet(rx_buffer)) {
+                                last_rx_ms = esp_timer_get_time() / 1000;
+                                heartbeat_pending = false;
+                            }
                         } else if (bytes_read > 0) {
                             // Consumed part of a frame, so the next read would start mid-frame.
                             ESP_LOGE(TAG, "RX short read, %d bytes, %u pending messages.", bytes_read, rx_pending);
