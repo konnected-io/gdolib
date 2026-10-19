@@ -236,7 +236,8 @@ bool fake_timer_armed(esp_timer_handle_t t) { return t && t->armed; }
 /* ---- gpio ---- */
 esp_err_t gpio_config(const gpio_config_t *cfg) { (void)cfg; return ESP_OK; }
 esp_err_t gpio_reset_pin(gpio_num_t pin) { (void)pin; return ESP_OK; }
-int gpio_get_level(gpio_num_t pin) { (void)pin; return 0; }
+int fake_gpio_level;
+int gpio_get_level(gpio_num_t pin) { (void)pin; return fake_gpio_level; }
 esp_err_t gpio_install_isr_service(int flags) { (void)flags; return ESP_OK; }
 esp_err_t gpio_isr_handler_add(gpio_num_t pin, void (*isr)(void *), void *arg) {
     (void)pin; (void)isr; (void)arg;

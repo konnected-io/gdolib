@@ -122,6 +122,8 @@ typedef struct {
 esp_err_t gpio_config(const gpio_config_t *cfg);
 esp_err_t gpio_reset_pin(gpio_num_t pin);
 int gpio_get_level(gpio_num_t pin);
+/* What gpio_get_level() returns for every pin; 1 on the RX pin reads as a busy line. */
+extern int fake_gpio_level;
 esp_err_t gpio_install_isr_service(int flags);
 esp_err_t gpio_isr_handler_add(gpio_num_t pin, void (*isr)(void *), void *arg);
 
