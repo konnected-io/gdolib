@@ -263,6 +263,58 @@ static void test_toggle_only_close_from_open_is_one_toggle(void) {
     CHECK_EQ(g_status.door_target, 10000);
 }
 
+/* ---------------------------------------------------------------- forced smart panel */
+
+static void start_v1_smart_panel(bool synced) {
+    start_gdo((gdo_test_opts_t){
+        .protocol = GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL,
+        .synced = synced,
+    });
+}
+
+// Hosts force the protocol they persisted from auto-detection, so this is every
+// smart-panel install after its first reboot. Suppressing startup TX must not
+// disable control for the life of the session.
+static void test_forced_smart_panel_can_still_send_commands(void) {
+    start_v1_smart_panel(true);
+    gdo_set_toggle_only(true); // what a completed v1 sync sets
+    opener_v1(0, V1_CMD_QUERY_DOOR_STATUS, 0x05);   // panel polls: closed
+    opener_v1(0, V1_CMD_QUERY_OTHER_STATUS, 0x08);  // light off
+    run();
+    CHECK_EQ(g_status.door, GDO_DOOR_STATE_CLOSED);
+
+    CHECK_EQ(gdo_door_open(), ESP_OK);
+    wait_until(1000);
+    run();
+    CHECK_EQ(gdo_light_on(), ESP_OK);
+    wait_until(2000);
+    run();
+
+    CHECK_EQ(transmitted_v1(V1_CMD_TOGGLE_DOOR_PRESS), 1);
+    CHECK_EQ(transmitted_v1(V1_CMD_TOGGLE_DOOR_RELEASE), 1);
+    CHECK_EQ(transmitted_v1(V1_CMD_TOGGLE_LIGHT_PRESS), 1);
+    CHECK_EQ(transmitted_v1(V1_CMD_TOGGLE_LIGHT_RELEASE), 1);
+}
+
+// The panel and the ESP usually power up together (e.g. after an outage), so the
+// panel can start talking after the sync wait has expired. Once it does, the driver
+// sees the door state but must not stay unsynced: with the protocol forced and the
+// sync task gone, nothing else will ever retry.
+static void test_forced_smart_panel_that_comes_up_late_still_syncs(void) {
+    start_v1_smart_panel(false);
+    gdo_sync_task(NULL); // the fake's notify wait returns at once: the panel stayed quiet
+    CHECK_EQ(fake_tx_count, 0);
+
+    opener_v1(8000, V1_CMD_QUERY_DOOR_STATUS, 0x05); // panel comes online: closed
+    opener_v1(8250, V1_CMD_QUERY_OTHER_STATUS, 0x08);
+    wait_until(60000);
+    run();
+
+    CHECK_EQ(g_status.door, GDO_DOOR_STATE_CLOSED);
+    CHECK(g_status.synced);
+    CHECK_EQ(fake_tx_count, 0);
+}
+
 RUN_TESTS(
     TEST(test_door_status_responses),
     TEST(test_other_status_light_and_lock),
@@ -279,5 +331,7 @@ RUN_TESTS(
     TEST(test_light_and_lock_toggles),
     TEST(test_v2_only_features_not_supported),
     TEST(test_toggle_only_open_from_stopped_while_opening),
-    TEST(test_toggle_only_close_from_open_is_one_toggle)
+    TEST(test_toggle_only_close_from_open_is_one_toggle),
+    TEST(test_forced_smart_panel_can_still_send_commands),
+    TEST(test_forced_smart_panel_that_comes_up_late_still_syncs)
 )
