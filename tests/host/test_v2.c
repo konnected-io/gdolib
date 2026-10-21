@@ -230,6 +230,18 @@ static void test_toggle_while_moving_stops(void) {
     CHECK_EQ(last_queued(GDO_CMD_DOOR_ACTION)->nibble, GDO_DOOR_ACTION_STOP);
 }
 
+static void test_toggle_only_toggle_while_moving_sends_toggle(void) {
+    start_v2();
+    gdo_set_toggle_only(true);
+    opener_sends(0, GDO_DOOR_STATE_CLOSING);
+    run();
+    s_queued_count = 0;
+
+    // Like a wall button press: the opener stops or reverses the door itself.
+    CHECK_EQ(gdo_door_toggle(), ESP_OK);
+    CHECK_EQ(last_queued(GDO_CMD_DOOR_ACTION)->nibble, GDO_DOOR_ACTION_TOGGLE);
+}
+
 static void test_light_and_lock_commands(void) {
     start_v2();
     opener_v2(0, GDO_CMD_STATUS, GDO_DOOR_STATE_CLOSED, 0x40, 0x00); // light off, unlocked
@@ -293,6 +305,7 @@ RUN_TESTS(
     TEST(test_door_open_sends_press_and_release),
     TEST(test_door_commands_noop_when_already_there),
     TEST(test_toggle_while_moving_stops),
+    TEST(test_toggle_only_toggle_while_moving_sends_toggle),
     TEST(test_light_and_lock_commands),
     TEST(test_learn_and_clear_paired_devices),
     TEST(test_commands_are_paced_by_min_interval)

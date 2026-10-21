@@ -514,7 +514,11 @@ esp_err_t gdo_door_stop(void) {
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
 esp_err_t gdo_door_toggle(void) {
-    if (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING) {
+    // In toggle-only mode, send a real TOGGLE even while the door is moving, like a wall button
+    // press: the opener stops or reverses the door itself. Some openers that need toggle-only
+    // also ignore a discrete STOP while closing, so mapping to STOP leaves no way to interrupt.
+    if (!g_status.toggle_only &&
+        (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_CLOSING)) {
         return gdo_door_stop();
     }
 
