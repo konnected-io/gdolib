@@ -125,16 +125,10 @@ static const uint32_t MOVE_TO_TARGET_NEAR_THRESHOLD = 200;
 // dance is taken — that dance schedules toggles at +500ms and +1000ms before
 // motion starts, so STOP needs to be pushed out to align the motor pulse.
 static const uint32_t MOVE_TO_TARGET_TOGGLE_DANCE_MS = 1000;
-// Some Security+ 2.0 openers (a jackshaft on the bench) ignore STOP while closing and only
-// reverse. This long after a partial close's STOP, a door still closing is checked with a
-// STATUS request and, if the opener confirms it, reversed so it can be stopped on the way up.
-// The stop is normally reported ~1060ms after the command.
+// Some jackshaft openers ignore STOP while closing; verify it this long after sending.
 static const uint32_t MOVE_TO_TARGET_CLOSE_STOP_VERIFY_MS = 1500;
-// Measured from command to the opener reporting the stop, which tracks the motor: the STOP
-// that lands a reversed close on its target is sent this far ahead.
+// Measured STOP command-to-stop latency.
 static const uint32_t MOVE_TO_TARGET_STOP_LATENCY_MS = 1050;
-// A partial close the opener would not stop: true while the STOP is being verified, then
-// while the reverse is waiting for the opener to report OPENING.
 static bool g_close_stop_verifying;
 static bool g_close_reversing;
 
