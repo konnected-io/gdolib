@@ -34,6 +34,7 @@ static void scheduled_cmd_timer_cb(void* arg);
 static void scheduled_event_timer_cb(void* arg);
 static void obst_timer_cb(void* arg);
 static void obst_verify_timer_cb(void* arg);
+static void close_stop_verify_timer_cb(void* arg);
 static void get_paired_devices(gdo_paired_device_type_t type);
 static void update_light_state(gdo_light_state_t light_state);
 static void update_lock_state(gdo_lock_state_t lock_state);
@@ -105,6 +106,7 @@ static esp_timer_handle_t motion_detect_timer;
 static esp_timer_handle_t door_position_sync_timer;
 static esp_timer_handle_t obst_timer;
 static esp_timer_handle_t obst_verify_timer;
+static esp_timer_handle_t close_stop_verify_timer;
 static void *g_user_cb_arg;
 static uint32_t g_tx_delay_ms = 50;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
@@ -123,6 +125,18 @@ static const uint32_t MOVE_TO_TARGET_NEAR_THRESHOLD = 200;
 // dance is taken — that dance schedules toggles at +500ms and +1000ms before
 // motion starts, so STOP needs to be pushed out to align the motor pulse.
 static const uint32_t MOVE_TO_TARGET_TOGGLE_DANCE_MS = 1000;
+// Some Security+ 2.0 openers (a jackshaft on the bench) ignore STOP while closing and only
+// reverse. This long after a partial close's STOP, a door still closing is checked with a
+// STATUS request and, if the opener confirms it, reversed so it can be stopped on the way up.
+// The stop is normally reported ~1060ms after the command.
+static const uint32_t MOVE_TO_TARGET_CLOSE_STOP_VERIFY_MS = 1500;
+// Measured from command to the opener reporting the stop, which tracks the motor: the STOP
+// that lands a reversed close on its target is sent this far ahead.
+static const uint32_t MOVE_TO_TARGET_STOP_LATENCY_MS = 1050;
+// A partial close the opener would not stop: true while the STOP is being verified, then
+// while the reverse is waiting for the opener to report OPENING.
+static bool g_close_stop_verifying;
+static bool g_close_reversing;
 
 // Security+ 2.0 obstruction timing, measured on a live opener (see issue #28):
 //   - each frame is retransmitted ~74ms apart (same rolling code);
@@ -251,6 +265,15 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         }
     }
 
+    timer_args.callback = close_stop_verify_timer_cb;
+    timer_args.arg = NULL;
+    timer_args.dispatch_method = ESP_TIMER_TASK;
+    timer_args.name = "close_stop_verify_timer";
+    err = esp_timer_create(&timer_args, &close_stop_verify_timer);
+    if (err != ESP_OK) {
+        return err;
+    }
+
     // Begin in secplus protocol v1 as its the easiest to detect.
     uart_config_t uart_config = {
         .baud_rate  = 1200,
@@ -337,6 +360,14 @@ esp_err_t gdo_deinit(void) {
         esp_timer_delete(obst_verify_timer);
         obst_verify_timer = NULL;
     }
+
+    if (close_stop_verify_timer) {
+        esp_timer_stop(close_stop_verify_timer);
+        esp_timer_delete(close_stop_verify_timer);
+        close_stop_verify_timer = NULL;
+    }
+    g_close_stop_verifying = false;
+    g_close_reversing = false;
 
     g_protocol_forced = false;
     g_status.synced = false;
@@ -611,6 +642,12 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
     err = schedule_command(&args, stop_delay_ms * 1000);
     if (err != ESP_OK) {
         return err;
+    }
+
+    if (!opening && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
+        esp_timer_stop(close_stop_verify_timer);
+        esp_timer_start_once(close_stop_verify_timer,
+                             (uint64_t)(stop_delay_ms + MOVE_TO_TARGET_CLOSE_STOP_VERIFY_MS) * 1000);
     }
 
     // Route through gdo_door_open()/gdo_door_close() so toggle-only / Sec+ v1
@@ -1140,10 +1177,9 @@ static void obst_verify_timer_cb(void* arg) {
 }
 
 /**
- * @brief This timer is started when the door starts moving and will queue an event of
- * `GDO_EVENT_DOOR_POSITION_UPDATE` every 500ms until the door stops.
+ * @brief Advances the door position estimate by the travel since g_door_start_moving_ms.
 */
-static void door_position_sync_timer_cb(void* arg) {
+static void integrate_door_position(void) {
     int32_t duration = (esp_timer_get_time() / 1000) - g_door_start_moving_ms;
     float direction_ms = g_status.door == GDO_DOOR_STATE_OPENING ? -g_status.open_ms : g_status.close_ms;
     float delta = (duration / direction_ms) * 10000.0f;
@@ -1156,19 +1192,53 @@ static void door_position_sync_timer_cb(void* arg) {
     }
 
     g_door_start_moving_ms += duration;
+}
 
-    // For a partial-target move, clamp the estimate at the target and stop the timer.
-    // The motor keeps running until the scheduled STOP fires; letting the estimate
-    // sail past the target is what makes a small physical overshoot look like 10%.
-    bool partial_target_reached =
+/**
+ * @brief For a partial-target move, clamps the estimate at the target once it is reached.
+ * The motor keeps running until the scheduled STOP fires; letting the estimate sail past the
+ * target is what makes a small physical overshoot look like 10%.
+ * @return true if the target has been reached.
+*/
+static bool clamp_to_partial_target(void) {
+    bool reached =
         (g_status.door == GDO_DOOR_STATE_OPENING &&
          g_status.door_target > 0 && g_status.door_position <= g_status.door_target) ||
         (g_status.door == GDO_DOOR_STATE_CLOSING &&
          g_status.door_target < 10000 && g_status.door_position >= g_status.door_target);
 
-    if (partial_target_reached) {
+    if (reached) {
+        // Wind the time base back by the overshoot, so a reversal of a close the opener
+        // would not stop (see update_door_state) still knows how far past the target it went.
+        int32_t overshoot = g_status.door_position - g_status.door_target;
+        g_door_start_moving_ms -= (int32_t)((overshoot < 0 ? -overshoot : overshoot) / 10000.0f *
+                                            (g_status.door == GDO_DOOR_STATE_OPENING ? g_status.open_ms : g_status.close_ms));
         g_status.door_position = g_status.door_target;
     }
+
+    return reached;
+}
+
+/**
+ * @brief Started after a partial close's STOP. If the door still reads as closing, ask the
+ * opener; decode_packet() reverses the door if the reply confirms it.
+*/
+static void close_stop_verify_timer_cb(void* arg) {
+    if (g_status.door != GDO_DOOR_STATE_CLOSING || g_status.door_target >= 10000) {
+        return;
+    }
+
+    g_close_stop_verifying = true;
+    get_status();
+}
+
+/**
+ * @brief This timer is started when the door starts moving and will queue an event of
+ * `GDO_EVENT_DOOR_POSITION_UPDATE` every 500ms until the door stops.
+*/
+static void door_position_sync_timer_cb(void* arg) {
+    integrate_door_position();
+    bool partial_target_reached = clamp_to_partial_target();
 
     if (g_status.door_position == 0 || g_status.door_position == 10000 || partial_target_reached) {
         esp_timer_stop(door_position_sync_timer);
@@ -1527,6 +1597,13 @@ static bool decode_packet(uint8_t *packet) {
     ESP_LOGI(TAG, "cmd=%03x (%s) byte2=%02x byte1=%02x nibble=%01x", cmd, cmd_to_string(cmd), byte2, byte1, nibble);
 
     if (cmd == GDO_CMD_STATUS) {
+        if (g_close_stop_verifying && nibble == GDO_DOOR_STATE_CLOSING && g_status.door_target < 10000) {
+            ESP_LOGW(TAG, "Opener ignored STOP while closing; reversing to stop at %.2f%% on the way up",
+                     g_status.door_target / 100.0f);
+            g_close_reversing = true;
+            send_door_action(g_status.toggle_only ? GDO_DOOR_ACTION_TOGGLE : GDO_DOOR_ACTION_OPEN);
+        }
+        g_close_stop_verifying = false;
         update_door_state((gdo_door_state_t)nibble);
         update_light_state((gdo_light_state_t)((byte2 >> 1) & 1));
         update_lock_state((gdo_lock_state_t)(byte2 & 1));
@@ -1991,6 +2068,13 @@ static void update_door_state(const gdo_door_state_t door_state) {
 
     ESP_LOGD(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
 
+    bool close_reversed = g_close_reversing && door_state == GDO_DOOR_STATE_OPENING;
+    g_close_reversing = false;
+    if (door_state != GDO_DOOR_STATE_CLOSING) {
+        esp_timer_stop(close_stop_verify_timer);
+        g_close_stop_verifying = false;
+    }
+
     if (!g_status.open_ms) {
         if (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSED) {
             start_opening = esp_timer_get_time();
@@ -2021,7 +2105,11 @@ static void update_door_state(const gdo_door_state_t door_state) {
 
     if (door_state == GDO_DOOR_STATE_OPENING || door_state == GDO_DOOR_STATE_CLOSING) {
         if (g_status.door_position >= 0 && g_status.close_ms > 0 && g_status.open_ms > 0) {
+            if (g_door_start_moving_ms) { // reversed without stopping first
+                integrate_door_position();
+            }
             g_door_start_moving_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            esp_timer_stop(door_position_sync_timer);
             if (esp_timer_start_periodic(door_position_sync_timer, 500 * 1000) != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to start door position sync timer");
             }
@@ -2033,6 +2121,20 @@ static void update_door_state(const gdo_door_state_t door_state) {
             g_status.door_target = 10000;
         }
 
+        if (close_reversed && g_status.door_target > 0 && g_status.door_target < g_status.door_position) {
+            uint32_t up_ms = (uint32_t)((g_status.door_position - g_status.door_target) / 10000.0f * g_status.open_ms);
+            uint32_t stop_delay_ms = up_ms > MOVE_TO_TARGET_STOP_LATENCY_MS ? up_ms - MOVE_TO_TARGET_STOP_LATENCY_MS : 1;
+            ESP_LOGI(TAG, "Reversed at %.2f%%: STOP scheduled at +%" PRIu32 "ms",
+                     g_status.door_position / 100.0f, stop_delay_ms);
+            gdo_sched_cmd_args_t args = {
+                .cmd = (uint32_t)GDO_DOOR_ACTION_STOP,
+                .door_cmd = true,
+            };
+            if (schedule_command(&args, stop_delay_ms * 1000) != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to schedule STOP after reversing");
+            }
+        }
+
         g_status.last_move_direction = door_state;
     } else {
         esp_timer_stop(door_position_sync_timer);
@@ -2040,6 +2142,9 @@ static void update_door_state(const gdo_door_state_t door_state) {
         if (door_state == GDO_DOOR_STATE_STOPPED) {
             if (g_status.door_position < 0) {
                 ESP_LOGW(TAG, "Unknown door position");
+            } else if (g_door_start_moving_ms) { // count the travel since the last 500ms tick
+                integrate_door_position();
+                clamp_to_partial_target();
             }
         } else if (door_state == GDO_DOOR_STATE_OPEN) {
             g_status.door_position = 0;
@@ -2388,3 +2493,4 @@ inline static esp_err_t queue_event(gdo_event_t event) {
     }
     return ESP_OK;
 }
+
