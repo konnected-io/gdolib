@@ -172,17 +172,6 @@ static void test_obstruction_while_closing_leaves_door_state_to_opener(void) {
     CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
 }
 
-static void test_motor_on_before_door_state_known(void) {
-    start_v2();
-    opener_v2(0, GDO_CMD_MOTOR_ON, 0, 0, 0);
-    run();
-    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_ON);
-
-    opener_sends(1000, GDO_DOOR_STATE_CLOSED);
-    run();
-    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
-}
-
 static void test_motion_detected_then_clears(void) {
     start_v2();
     opener_v2(0, GDO_CMD_MOTION, 0, 0, 0);
@@ -373,7 +362,6 @@ RUN_TESTS(
     TEST(test_motor_follows_door_state),
     TEST(test_motor_on_without_door_move_is_ignored),
     TEST(test_obstruction_while_closing_leaves_door_state_to_opener),
-    TEST(test_motor_on_before_door_state_known),
     TEST(test_motion_detected_then_clears),
     TEST(test_motion_ignored_before_sync),
     TEST(test_openings_paired_devices_battery_ttc),

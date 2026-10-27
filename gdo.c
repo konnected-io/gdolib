@@ -1624,13 +1624,6 @@ static bool decode_packet(uint8_t *packet) {
         }
     } else if (cmd == GDO_CMD_LIGHT) {
         handle_light_action((gdo_light_action_t)nibble);
-    } else if (cmd == GDO_CMD_MOTOR_ON) {
-        // Motor state follows the door state: jackshafts never send MOTOR_ON, and chain/belt
-        // units send it ~1.5-2s after the moving STATUS and repeat it during travel, so a
-        // repeat can trail the stop. Only use it while the door state is still unknown.
-        if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
-            update_motor_state(GDO_MOTOR_STATE_ON);
-        }
     } else if (cmd == GDO_CMD_DOOR_ACTION) {
         update_button_state((gdo_button_state_t)((byte1 & 1) == 1) ?
                              GDO_BUTTON_STATE_PRESSED : GDO_BUTTON_STATE_RELEASED);
