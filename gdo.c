@@ -1645,11 +1645,6 @@ static bool decode_packet(uint8_t *packet) {
     } else if (cmd == GDO_CMD_BATTERY_STATUS) {
         update_battery_state(byte1);
     } else if (cmd == GDO_CMD_OBST_1) {
-        if (g_status.door == GDO_DOOR_STATE_OPEN || g_status.door == GDO_DOOR_STATE_CLOSING) {
-            g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
-            queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
-        }
-
         /*
          * OBST_1 fires on both the trip and the clear edge with identical payload, and is
          * the only signal for brief/intermittent obstructions -- the STATUS bit and
