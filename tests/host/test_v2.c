@@ -96,6 +96,48 @@ static void test_wall_button_press_and_release(void) {
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_BUTTON], 2);
 }
 
+static void test_motor_follows_door_state(void) {
+    start_v2();
+    // Jackshaft openers never send MOTOR_ON; the moving STATUS alone must turn the motor on.
+    opener_sends(0, GDO_DOOR_STATE_OPENING);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_ON);
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 1);
+
+    // Chain/belt openers send MOTOR_ON ~1.5-2s into travel and repeat it; no new event.
+    opener_v2(1900, GDO_CMD_MOTOR_ON, 0, 0, 0);
+    run();
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 1);
+
+    opener_sends(10000, GDO_DOOR_STATE_OPEN);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 2);
+
+    // A repeat trailing the stop must not turn the motor back on with nothing to clear it.
+    opener_v2(10100, GDO_CMD_MOTOR_ON, 0, 0, 0);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 2);
+
+    opener_sends(12000, GDO_DOOR_STATE_CLOSING);
+    opener_sends(14000, GDO_DOOR_STATE_STOPPED);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 4);
+}
+
+static void test_motor_on_before_door_state_known(void) {
+    start_v2();
+    opener_v2(0, GDO_CMD_MOTOR_ON, 0, 0, 0);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_ON);
+
+    opener_sends(1000, GDO_DOOR_STATE_CLOSED);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+}
+
 static void test_motion_detected_then_clears(void) {
     start_v2();
     opener_v2(0, GDO_CMD_MOTION, 0, 0, 0);
@@ -283,6 +325,8 @@ RUN_TESTS(
     TEST(test_frames_with_our_client_id_are_ignored),
     TEST(test_light_action_from_opener),
     TEST(test_wall_button_press_and_release),
+    TEST(test_motor_follows_door_state),
+    TEST(test_motor_on_before_door_state_known),
     TEST(test_motion_detected_then_clears),
     TEST(test_motion_ignored_before_sync),
     TEST(test_openings_paired_devices_battery_ttc),
