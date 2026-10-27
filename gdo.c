@@ -1625,7 +1625,12 @@ static bool decode_packet(uint8_t *packet) {
     } else if (cmd == GDO_CMD_LIGHT) {
         handle_light_action((gdo_light_action_t)nibble);
     } else if (cmd == GDO_CMD_MOTOR_ON) {
-        update_motor_state(GDO_MOTOR_STATE_ON);
+        // Motor state follows the door state: jackshafts never send MOTOR_ON, and chain/belt
+        // units send it ~1.5-2s after the moving STATUS and repeat it during travel, so a
+        // repeat can trail the stop. Only use it while the door state is still unknown.
+        if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+            update_motor_state(GDO_MOTOR_STATE_ON);
+        }
     } else if (cmd == GDO_CMD_DOOR_ACTION) {
         update_button_state((gdo_button_state_t)((byte1 & 1) == 1) ?
                              GDO_BUTTON_STATE_PRESSED : GDO_BUTTON_STATE_RELEASED);
@@ -2098,6 +2103,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
     }
 
     if (door_state == GDO_DOOR_STATE_OPENING || door_state == GDO_DOOR_STATE_CLOSING) {
+        update_motor_state(GDO_MOTOR_STATE_ON);
         if (g_status.door_position >= 0 && g_status.close_ms > 0 && g_status.open_ms > 0) {
             if (g_door_start_moving_ms) { // reversed without stopping first
                 integrate_door_position();
@@ -2154,7 +2160,7 @@ static void update_door_state(const gdo_door_state_t door_state) {
         }
 
         g_door_start_moving_ms = 0;
-        g_status.motor = GDO_MOTOR_STATE_OFF;
+        update_motor_state(GDO_MOTOR_STATE_OFF);
         g_status.door_target = g_status.door_position;
     }
 

@@ -51,8 +51,13 @@ static void test_door_status_responses(void) {
         opener_v1(i * 1000, V1_CMD_QUERY_DOOR_STATUS, cases[i].resp);
         run();
         CHECK_EQ(g_status.door, cases[i].door);
+        CHECK_EQ(g_status.motor, (cases[i].door == GDO_DOOR_STATE_OPENING ||
+                                  cases[i].door == GDO_DOOR_STATE_CLOSING) ?
+                                 GDO_MOTOR_STATE_ON : GDO_MOTOR_STATE_OFF);
     }
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_DOOR_POSITION], 5);
+    // OFF at Open, ON at Opening, OFF at Stopped; Closed and Closing are no change.
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 3);
 }
 
 static void test_other_status_light_and_lock(void) {
