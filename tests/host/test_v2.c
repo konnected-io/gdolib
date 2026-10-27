@@ -127,6 +127,51 @@ static void test_motor_follows_door_state(void) {
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 4);
 }
 
+// Issue #45: a MOTOR_ON that isn't followed by a door state change must not stick.
+static void test_motor_on_without_door_move_is_ignored(void) {
+    start_v2();
+    opener_sends(0, GDO_DOOR_STATE_CLOSED);
+    opener_v2(500, GDO_CMD_MOTOR_ON, 0, 0, 0);
+    opener_sends(1000, GDO_DOOR_STATE_CLOSED);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+
+    opener_sends(2000, GDO_DOOR_STATE_OPEN);
+    opener_v2(2500, GDO_CMD_MOTOR_ON, 0, 0, 0);
+    opener_v2(2800, GDO_CMD_OBST_1, 0, 0, 0);
+    opener_sends(4000, GDO_DOOR_STATE_OPEN);
+    run();
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+    CHECK_EQ(s_cb_events[GDO_CB_EVENT_MOTOR], 1); // only the initial OFF
+}
+
+// The beam can trip near the bottom of a close that still completes, so OBST_1 must not
+// change the door state; the opener reports a reversal itself.
+static void test_obstruction_while_closing_leaves_door_state_to_opener(void) {
+    start_v2();
+    opener_sends(0, GDO_DOOR_STATE_OPEN);
+    opener_sends(1000, GDO_DOOR_STATE_CLOSING);
+    opener_v2(3000, GDO_CMD_OBST_1, 0, 0, 0);
+    run();
+    CHECK_EQ(g_status.door, GDO_DOOR_STATE_CLOSING);
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_ON);
+
+    opener_sends(4000, GDO_DOOR_STATE_CLOSED);
+    run();
+    CHECK_EQ(g_status.door, GDO_DOOR_STATE_CLOSED);
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+
+    opener_sends(5000, GDO_DOOR_STATE_OPEN);
+    opener_sends(6000, GDO_DOOR_STATE_CLOSING);
+    opener_v2(8000, GDO_CMD_OBST_1, 0, 0, 0);
+    opener_v2(8500, GDO_CMD_MOTOR_ON, 0, 0, 0);
+    opener_sends(11000, GDO_DOOR_STATE_OPEN); // reversal reported without OPENING
+    run();
+    CHECK_EQ(g_status.door, GDO_DOOR_STATE_OPEN);
+    CHECK_EQ(g_status.door_position, 0);
+    CHECK_EQ(g_status.motor, GDO_MOTOR_STATE_OFF);
+}
+
 static void test_motor_on_before_door_state_known(void) {
     start_v2();
     opener_v2(0, GDO_CMD_MOTOR_ON, 0, 0, 0);
@@ -326,6 +371,8 @@ RUN_TESTS(
     TEST(test_light_action_from_opener),
     TEST(test_wall_button_press_and_release),
     TEST(test_motor_follows_door_state),
+    TEST(test_motor_on_without_door_move_is_ignored),
+    TEST(test_obstruction_while_closing_leaves_door_state_to_opener),
     TEST(test_motor_on_before_door_state_known),
     TEST(test_motion_detected_then_clears),
     TEST(test_motion_ignored_before_sync),
