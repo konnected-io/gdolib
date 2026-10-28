@@ -1426,10 +1426,6 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (g_protocol_forced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
     gdo_tx_message_t message;
     message.cmd = command;
     message.packet = (uint8_t*)malloc(19); // will be freed in the gdo_main_task
@@ -1465,10 +1461,6 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
  * @return ESP_OK on success, other non-zero errors from the UART driver.
 */
 static esp_err_t transmit_packet(uint8_t *packet) {
-    if (g_protocol_forced && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
     esp_err_t err = ESP_OK;
 
     if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
@@ -2176,10 +2168,18 @@ static void update_door_state(const gdo_door_state_t door_state) {
 
     g_status.door = door_state;
 
-    if (was_door_unknown &&
-        g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1 &&
-        gdo_sync_task_handle) {
-        xTaskNotifyGive(gdo_sync_task_handle);
+    if (was_door_unknown && g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
+        if (gdo_sync_task_handle) {
+            xTaskNotifyGive(gdo_sync_task_handle);
+        } else if (g_protocol_forced &&
+                   g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL &&
+                   !g_status.synced) {
+            // The panel came up after the sync task gave up, and nothing else retries
+            ESP_LOGI(TAG, "Smart wall panel found after sync timeout");
+            g_status.synced = true;
+            g_status.toggle_only = true;
+            queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
+        }
     }
 
     queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
