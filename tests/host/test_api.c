@@ -95,6 +95,19 @@ static void test_set_protocol(void) {
     CHECK_EQ(gdo_set_protocol(GDO_PROTOCOL_SEC_PLUS_V1), ESP_ERR_INVALID_STATE);
 }
 
+static void test_reset_protocol_forgets_detection(void) {
+    CHECK_EQ(gdo_set_protocol(GDO_PROTOCOL_SEC_PLUS_V2), ESP_OK);
+    CHECK(g_protocol_forced);
+    CHECK_EQ(gdo_reset_protocol(), ESP_OK);
+    CHECK_EQ(g_status.protocol, 0);
+    CHECK(!g_protocol_forced);
+    CHECK_EQ(gdo_set_protocol(GDO_PROTOCOL_SEC_PLUS_V1), ESP_OK); // detection can start over
+
+    g_status.synced = true;
+    CHECK_EQ(gdo_reset_protocol(), ESP_ERR_INVALID_STATE);
+    g_status.synced = false;
+}
+
 static void test_persisted_rolling_code_and_client_id_are_used(void) {
     // Hosts restore these from storage before start; the opener rejects stale codes.
     CHECK_EQ(gdo_set_client_id(0x1234), ESP_OK);
@@ -400,6 +413,7 @@ RUN_TESTS(
     TEST(test_deinit_resets_state_and_allows_reinit),
     TEST(test_get_status_snapshots),
     TEST(test_set_protocol),
+    TEST(test_reset_protocol_forgets_detection),
     TEST(test_persisted_rolling_code_and_client_id_are_used),
     TEST(test_duration_and_interval_validation),
     TEST(test_open_and_close_durations_are_measured),

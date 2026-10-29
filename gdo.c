@@ -939,6 +939,22 @@ esp_err_t gdo_set_client_id(uint32_t client_id) {
 }
 
 /**
+ * @brief Forgets the detected (or forced) protocol so the next gdo_sync() re-runs the full
+ * Security+ 1.0 then 2.0 detection. 2.0 is only a fallback when the 1.0 probes hear nothing, so a
+ * 2.0 sync that keeps failing may simply mean the opener was not wired up when the probe ran.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if already synced or a sync is running.
+*/
+esp_err_t gdo_reset_protocol(void) {
+    if (g_status.synced || gdo_sync_task_handle) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    g_status.protocol = 0;
+    g_protocol_forced = false;
+    g_status.door = GDO_DOOR_STATE_UNKNOWN;
+    return ESP_OK;
+}
+
+/**
  * @brief Sets the protocol to use to communicate with the GDO.
  * @param protocol The protocol to use.
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the protocol is invalid,

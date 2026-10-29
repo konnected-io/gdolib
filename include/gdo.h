@@ -411,6 +411,13 @@ esp_err_t gdo_set_client_id(uint32_t client_id);
 esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol);
 
 /**
+ * @brief Forgets the detected (or forced) protocol so the next gdo_sync() re-runs the full
+ * Security+ 1.0 then 2.0 detection.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if already synced or a sync is running.
+*/
+esp_err_t gdo_reset_protocol(void);
+
+/**
  * @brief Sets the time the door takes to open from fully closed in milliseconds.
  * @param ms The time the door takes to open from fully closed in milliseconds.
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
