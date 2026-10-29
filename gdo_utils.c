@@ -254,7 +254,14 @@ const char* gdo_button_state_to_string(gdo_button_state_t state) {
 }
 
 const char* gdo_battery_state_to_string(gdo_battery_state_t state) {
-    return GDO_STR_LOOKUP(gdo_battery_state_str, state);
+    // gdo_battery_state_t holds the opener's wire values (0, 0x6, 0x8), not
+    // sequential indices, so it cannot index gdo_battery_state_str[] directly.
+    switch (state) {
+        case GDO_BATT_STATE_UNKNOWN:  return gdo_battery_state_str[0];
+        case GDO_BATT_STATE_CHARGING: return gdo_battery_state_str[1];
+        case GDO_BATT_STATE_FULL:     return gdo_battery_state_str[2];
+        default:                      return "Invalid";
+    }
 }
 
 const char* gdo_learn_state_to_string(gdo_learn_state_t state) {

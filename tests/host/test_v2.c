@@ -212,6 +212,15 @@ static void test_openings_paired_devices_battery_ttc(void) {
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_PAIRED_DEVICES], 2);
 }
 
+static void test_battery_state_strings_follow_wire_values(void) {
+    // The enum is sparse (0, 0x6, 0x8), so each state needs its own string.
+    CHECK_EQ(strcmp(gdo_battery_state_to_string(GDO_BATT_STATE_UNKNOWN), "Unknown"), 0);
+    CHECK_EQ(strcmp(gdo_battery_state_to_string(GDO_BATT_STATE_CHARGING), "Charging"), 0);
+    CHECK_EQ(strcmp(gdo_battery_state_to_string(GDO_BATT_STATE_FULL), "Full"), 0);
+    CHECK_EQ(strcmp(gdo_battery_state_to_string((gdo_battery_state_t)0x7), "Invalid"), 0);
+    CHECK_EQ(strcmp(gdo_battery_state_to_string(GDO_BATT_STATE_MAX), "Invalid"), 0);
+}
+
 static void test_unsolicited_openings_ignored_until_known(void) {
     start_v2();
     // A nonzero flag means another device asked; with no baseline yet, don't trust it.
@@ -365,6 +374,7 @@ RUN_TESTS(
     TEST(test_motion_detected_then_clears),
     TEST(test_motion_ignored_before_sync),
     TEST(test_openings_paired_devices_battery_ttc),
+    TEST(test_battery_state_strings_follow_wire_values),
     TEST(test_unsolicited_openings_ignored_until_known),
     TEST(test_obstruction_from_status_bit),
     TEST(test_obstruction_status_bit_ignored_without_option),
