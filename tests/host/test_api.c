@@ -330,6 +330,53 @@ static void test_move_to_target_rejects_tiny_moves(void) {
     CHECK_EQ(g_status.door_target, 10000);
 }
 
+static void test_retry_door_command_repeats_the_pending_request(void) {
+    start_v2();
+    opener_sends(0, GDO_DOOR_STATE_CLOSED);
+    run();
+    uint32_t before = g_status.door_command_id;
+
+    CHECK_EQ(gdo_retry_door_command(before + 1), ESP_ERR_INVALID_STATE); // nothing requested yet
+    CHECK_EQ(gdo_door_open(), ESP_OK);
+    CHECK_EQ(g_status.door_command_id, before + 1);
+    s_queued_count = 0;
+
+    CHECK_EQ(gdo_retry_door_command(0), ESP_ERR_INVALID_STATE);
+    CHECK_EQ(gdo_retry_door_command(before), ESP_ERR_INVALID_STATE); // stale
+    CHECK_EQ(queued(GDO_CMD_DOOR_ACTION), 0);
+
+    CHECK_EQ(gdo_retry_door_command(before + 1), ESP_OK);
+    CHECK_EQ(g_status.door_command_id, before + 1); // a retry is not a new request
+    CHECK_EQ(queued(GDO_CMD_DOOR_ACTION), 2);
+    CHECK_EQ(last_queued(GDO_CMD_DOOR_ACTION)->nibble, GDO_DOOR_ACTION_OPEN);
+
+    // A newer request supersedes the old id.
+    opener_sends(0, GDO_DOOR_STATE_OPEN);
+    run();
+    CHECK_EQ(gdo_door_close(), ESP_OK);
+    CHECK_EQ(gdo_retry_door_command(before + 1), ESP_ERR_INVALID_STATE);
+    s_queued_count = 0;
+    CHECK_EQ(gdo_retry_door_command(before + 2), ESP_OK);
+    CHECK_EQ(last_queued(GDO_CMD_DOOR_ACTION)->nibble, GDO_DOOR_ACTION_CLOSE);
+}
+
+static void test_retry_door_command_refuses_toggle_only_and_unsynced(void) {
+    start_v2();
+    opener_sends(0, GDO_DOOR_STATE_CLOSED);
+    run();
+    CHECK_EQ(gdo_door_open(), ESP_OK);
+    uint32_t id = g_status.door_command_id;
+
+    gdo_set_toggle_only(true);
+    s_queued_count = 0;
+    CHECK_EQ(gdo_retry_door_command(id), ESP_ERR_NOT_SUPPORTED);
+    CHECK_EQ(s_queued_count, 0);
+
+    gdo_set_toggle_only(false);
+    g_status.synced = false;
+    CHECK_EQ(gdo_retry_door_command(id), ESP_ERR_INVALID_STATE);
+}
+
 RUN_TESTS(
     TEST(test_init_validates_and_rejects_double_init),
     TEST(test_calls_before_init_or_start_are_rejected),
@@ -348,5 +395,7 @@ RUN_TESTS(
     TEST(test_move_to_target_late_close_stop_report_does_not_reverse),
     TEST(test_move_to_target_full_close_is_never_reversed),
     TEST(test_position_tracks_through_direct_reversal),
-    TEST(test_move_to_target_rejects_tiny_moves)
+    TEST(test_move_to_target_rejects_tiny_moves),
+    TEST(test_retry_door_command_repeats_the_pending_request),
+    TEST(test_retry_door_command_refuses_toggle_only_and_unsynced)
 )

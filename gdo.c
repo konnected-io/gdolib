@@ -475,7 +475,7 @@ esp_err_t gdo_sync(void) {
  * @brief Opens the door.
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
-esp_err_t gdo_door_open(void) {
+static esp_err_t door_open_impl(void) {
     g_status.door_target = 0;
 
     if (g_status.door == GDO_DOOR_STATE_OPENING || g_status.door == GDO_DOOR_STATE_OPEN) {
@@ -512,7 +512,7 @@ esp_err_t gdo_door_open(void) {
  * @brief Closes the door.
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */
-esp_err_t gdo_door_close(void) {
+static esp_err_t door_close_impl(void) {
     g_status.door_target = 10000;
 
     if (g_status.door == GDO_DOOR_STATE_CLOSING || g_status.door == GDO_DOOR_STATE_CLOSED) {
@@ -524,6 +524,39 @@ esp_err_t gdo_door_close(void) {
     }
 
     return send_door_action(GDO_DOOR_ACTION_CLOSE);
+}
+
+esp_err_t gdo_door_open(void) {
+    ++g_status.door_command_id;
+    return door_open_impl();
+}
+
+esp_err_t gdo_door_close(void) {
+    ++g_status.door_command_id;
+    return door_close_impl();
+}
+
+/**
+ * @brief Repeats the pending open or close request identified by command_id.
+ *
+ * Does not start a new request: door_command_id is unchanged, so a host that
+ * limits retries per request keeps a single budget across calls.
+ * @param command_id The door_command_id of the request to retry.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if command_id is zero or no
+ * longer the latest request, the driver is not synced, or the target is not an
+ * endpoint, ESP_ERR_NOT_SUPPORTED on toggle-only openers (repeating a toggle can
+ * reverse or stop the door instead of completing the request).
+*/
+esp_err_t gdo_retry_door_command(uint32_t command_id) {
+    if (!command_id || command_id != g_status.door_command_id || !g_status.synced) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (g_status.toggle_only) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (g_status.door_target == 0) return door_open_impl();
+    if (g_status.door_target == 10000) return door_close_impl();
+    return ESP_ERR_INVALID_STATE;
 }
 
 /**

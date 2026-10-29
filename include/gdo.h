@@ -146,6 +146,7 @@ typedef struct {
     uint16_t close_ms; // Time door takes to close from fully open in milliseconds
     int32_t door_position; // Door position in percentage (0-10000) [OPEN-CLOSED]
     int32_t door_target; // Door target position in percentage (0-10000) [OPEN-CLOSED]
+    uint32_t door_command_id; // Incremented by each gdo_door_open()/gdo_door_close() request; gdo_retry_door_command() does not change it
     uint32_t client_id; // Client ID
     uint32_t rolling_code; // Rolling code
     bool toggle_only; // Used when the door opener only supports the toggle command.
@@ -216,6 +217,16 @@ esp_err_t gdo_door_open(void);
  * @return ESP_OK on success, other non-zero errors.
 */
 esp_err_t gdo_door_close(void);
+
+/**
+ * @brief Repeats the pending open or close request identified by command_id (the
+ * door_command_id from gdo_get_status() right after the request) without starting a
+ * new one, so a host can limit retries per request.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if command_id is zero or no longer the
+ * latest request, the driver is not synced, or the target is not an endpoint,
+ * ESP_ERR_NOT_SUPPORTED on toggle-only openers (a repeated toggle can reverse the door).
+*/
+esp_err_t gdo_retry_door_command(uint32_t command_id);
 
 /**
  * @brief Stops the door.
