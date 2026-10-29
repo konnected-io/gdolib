@@ -377,6 +377,23 @@ static void test_retry_door_command_refuses_toggle_only_and_unsynced(void) {
     CHECK_EQ(gdo_retry_door_command(id), ESP_ERR_INVALID_STATE);
 }
 
+static void test_last_rx_advances_on_any_decoded_packet(void) {
+    start_v2();
+    CHECK_EQ(gdo_get_last_rx_ms(), 0);
+    opener_sends(0, GDO_DOOR_STATE_CLOSED);
+    run();
+    int64_t first = gdo_get_last_rx_ms();
+    CHECK(first > 0);
+
+    // A repeat of the same state changes nothing visible, but the link is alive.
+    opener_sends(0, GDO_DOOR_STATE_CLOSED);
+    run();
+    CHECK(gdo_get_last_rx_ms() >= first);
+
+    CHECK_EQ(gdo_deinit(), ESP_OK);
+    CHECK_EQ(gdo_get_last_rx_ms(), 0);
+}
+
 RUN_TESTS(
     TEST(test_init_validates_and_rejects_double_init),
     TEST(test_calls_before_init_or_start_are_rejected),
@@ -397,5 +414,6 @@ RUN_TESTS(
     TEST(test_position_tracks_through_direct_reversal),
     TEST(test_move_to_target_rejects_tiny_moves),
     TEST(test_retry_door_command_repeats_the_pending_request),
-    TEST(test_retry_door_command_refuses_toggle_only_and_unsynced)
+    TEST(test_retry_door_command_refuses_toggle_only_and_unsynced),
+    TEST(test_last_rx_advances_on_any_decoded_packet)
 )

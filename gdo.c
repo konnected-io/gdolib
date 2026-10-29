@@ -109,6 +109,9 @@ static esp_timer_handle_t obst_verify_timer;
 static esp_timer_handle_t close_stop_verify_timer;
 static void *g_user_cb_arg;
 static uint32_t g_tx_delay_ms = 50;
+// Time (ms since boot) of the last packet decoded from the opener, on either
+// protocol; 0 until one arrives.
+static int64_t g_last_rx_ms;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 // Empirical offset added to the move-to-target STOP delay to compensate for the
@@ -363,6 +366,9 @@ esp_err_t gdo_deinit(void) {
     g_close_stop_verifying = false;
     g_close_reversing = false;
 
+    portENTER_CRITICAL(&gdo_spinlock);
+    g_last_rx_ms = 0;
+    portEXIT_CRITICAL(&gdo_spinlock);
     g_protocol_forced = false;
     g_status.synced = false;
     g_status.protocol = 0;
@@ -688,6 +694,23 @@ esp_err_t gdo_door_move_to_target(uint32_t target) {
         g_status.door_target = target;
     }
     return err;
+}
+
+/**
+ * @brief Milliseconds since boot at which the last packet was decoded from the opener, or 0 if none yet.
+ * Keeps advancing while the door is idle, so a host can tell a quiet link from a dead one.
+*/
+int64_t gdo_get_last_rx_ms(void) {
+    portENTER_CRITICAL(&gdo_spinlock);
+    int64_t received = g_last_rx_ms;
+    portEXIT_CRITICAL(&gdo_spinlock);
+    return received;
+}
+
+static void record_received_packet(void) {
+    portENTER_CRITICAL(&gdo_spinlock);
+    g_last_rx_ms = esp_timer_get_time() / 1000;
+    portEXIT_CRITICAL(&gdo_spinlock);
 }
 
 /**
@@ -1540,6 +1563,8 @@ static void decode_v1_packet(uint8_t *packet) {
     gdo_v1_command_t cmd = (gdo_v1_command_t)packet[0];
     uint8_t resp = packet[1];
 
+    if (cmd > V1_CMD_MIN && cmd < V1_CMD_MAX) record_received_packet();
+
     if (cmd == V1_CMD_QUERY_DOOR_STATUS) {
         gdo_door_state_t door_state = GDO_DOOR_STATE_UNKNOWN;
         uint8_t val = resp & 0x7;
@@ -1879,6 +1904,7 @@ static void gdo_main_task(void* arg) {
 
                             print_buffer(g_status.protocol, rx_buffer, false);
                             if (decode_packet(rx_buffer)) {
+                                record_received_packet();
                                 last_rx_ms = esp_timer_get_time() / 1000;
                                 heartbeat_pending = false;
                             }
