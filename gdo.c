@@ -714,6 +714,14 @@ static void record_received_packet(void) {
 }
 
 /**
+ * @brief Requests the current status from the opener.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_ERR_NOT_SUPPORTED on Security+ 1.0.
+*/
+esp_err_t gdo_refresh_status(void) {
+    return get_status();
+}
+
+/**
  * @brief Turns the light on.
  * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_FAIL if the encoding fails.
 */

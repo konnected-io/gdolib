@@ -407,6 +407,20 @@ static void test_last_rx_advances_on_any_decoded_packet(void) {
     CHECK_EQ(gdo_get_last_rx_ms(), 0);
 }
 
+static void test_refresh_status_requests_status_on_v2_only(void) {
+    start_v2();
+    opener_sends(0, GDO_DOOR_STATE_CLOSED);
+    run();
+    s_queued_count = 0;
+    CHECK_EQ(gdo_refresh_status(), ESP_OK);
+    CHECK_EQ(queued(GDO_CMD_GET_STATUS), 1);
+
+    g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V1;
+    s_queued_count = 0;
+    CHECK_EQ(gdo_refresh_status(), ESP_ERR_NOT_SUPPORTED);
+    CHECK_EQ(s_queued_count, 0);
+}
+
 RUN_TESTS(
     TEST(test_init_validates_and_rejects_double_init),
     TEST(test_calls_before_init_or_start_are_rejected),
@@ -429,5 +443,6 @@ RUN_TESTS(
     TEST(test_move_to_target_rejects_tiny_moves),
     TEST(test_retry_door_command_repeats_the_pending_request),
     TEST(test_retry_door_command_refuses_toggle_only_and_unsynced),
-    TEST(test_last_rx_advances_on_any_decoded_packet)
+    TEST(test_last_rx_advances_on_any_decoded_packet),
+    TEST(test_refresh_status_requests_status_on_v2_only)
 )

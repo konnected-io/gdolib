@@ -207,6 +207,13 @@ esp_err_t gdo_get_status(gdo_status_t *status);
 esp_err_t gdo_sync(void);
 
 /**
+ * @brief Requests the current status from the opener. Only Security+ 2.0 has a status request; on
+ * Security+ 1.0 the wall panel or emulation polls status instead.
+ * @return ESP_OK on success, ESP_ERR_NO_MEM if the queue is full, ESP_ERR_NOT_SUPPORTED on Security+ 1.0.
+*/
+esp_err_t gdo_refresh_status(void);
+
+/**
  * @brief Milliseconds since boot at which the last packet was decoded from the opener, or 0 if
  * none yet. Keeps advancing while the door is idle (a wall panel's polls count), unlike the
  * state-change callbacks, so a host can tell a quiet link from a dead one without sending anything.
