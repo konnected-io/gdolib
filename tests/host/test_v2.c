@@ -45,13 +45,21 @@ static void test_status_frame_updates_state_and_fires_callbacks(void) {
     CHECK_EQ(s_cb_events[GDO_CB_EVENT_LOCK], 1);
 }
 
-static void test_closed_sets_position_and_requests_openings(void) {
+static void test_closed_sets_position_and_delays_openings_request(void) {
     start_v2();
     opener_sends(0, GDO_DOOR_STATE_CLOSED);
     run();
 
     CHECK_EQ(g_status.door, GDO_DOOR_STATE_CLOSED);
     CHECK_EQ(g_status.door_position, 10000);
+    CHECK_EQ(queued(GDO_CMD_GET_OPENINGS), 0);
+
+    wait_until(249);
+    run();
+    CHECK_EQ(queued(GDO_CMD_GET_OPENINGS), 0);
+
+    wait_until(250);
+    run();
     CHECK_EQ(queued(GDO_CMD_GET_OPENINGS), 1);
 }
 
@@ -364,7 +372,7 @@ static void test_commands_are_paced_by_min_interval(void) {
 
 RUN_TESTS(
     TEST(test_status_frame_updates_state_and_fires_callbacks),
-    TEST(test_closed_sets_position_and_requests_openings),
+    TEST(test_closed_sets_position_and_delays_openings_request),
     TEST(test_frames_with_our_client_id_are_ignored),
     TEST(test_light_action_from_opener),
     TEST(test_wall_button_press_and_release),
