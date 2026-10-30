@@ -2139,7 +2139,13 @@ static void update_door_state(const gdo_door_state_t door_state) {
         } else if (door_state == GDO_DOOR_STATE_CLOSED) {
             g_status.door_position = 10000;
             if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
-                get_openings();
+                gdo_sched_cmd_args_t args = {
+                    .cmd = (uint32_t)GDO_CMD_GET_OPENINGS,
+                };
+                esp_err_t err = schedule_command(&args, 250 * 1000);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to schedule openings refresh: %s", esp_err_to_name(err));
+                }
             }
         } else {
             ESP_LOGE(TAG, "Unknown door state: %d", door_state);
