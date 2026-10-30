@@ -95,6 +95,19 @@ static void test_set_protocol(void) {
     CHECK_EQ(gdo_set_protocol(GDO_PROTOCOL_SEC_PLUS_V1), ESP_ERR_INVALID_STATE);
 }
 
+static void test_forced_smart_panel_sync_times_out_without_transmitting(void) {
+    start_gdo((gdo_test_opts_t){
+        .protocol = GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL,
+        .synced = false,
+    });
+
+    gdo_sync_task(NULL);
+    CHECK_EQ(fake_last_notify_timeout, pdMS_TO_TICKS(V1_SMART_PANEL_SYNC_TIMEOUT_MS));
+    CHECK(!g_status.synced);
+    CHECK_EQ(g_status.protocol, GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL);
+    CHECK_EQ(fake_tx_count, 0);
+}
+
 static void test_persisted_rolling_code_and_client_id_are_used(void) {
     // Hosts restore these from storage before start; the opener rejects stale codes.
     CHECK_EQ(gdo_set_client_id(0x1234), ESP_OK);
@@ -336,6 +349,7 @@ RUN_TESTS(
     TEST(test_deinit_resets_state_and_allows_reinit),
     TEST(test_get_status_snapshots),
     TEST(test_set_protocol),
+    TEST(test_forced_smart_panel_sync_times_out_without_transmitting),
     TEST(test_persisted_rolling_code_and_client_id_are_used),
     TEST(test_duration_and_interval_validation),
     TEST(test_open_and_close_durations_are_measured),
