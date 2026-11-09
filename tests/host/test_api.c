@@ -76,23 +76,29 @@ static void test_deinit_resets_state_and_allows_reinit(void) {
 
 /* gpio_reset_pin() would leave TX pulled up, which an inverted line (the transistor on a
  * ratgdo) turns into a held-low wall line: a Sec+ v1 button press. Deinit parks TX at the
- * UART idle level instead and holds it there across the restart; init releases the hold. */
+ * UART idle level instead, whether or not the UART driver was installed. */
 static void test_deinit_parks_tx_at_idle_level(void) {
     for (int invert = 0; invert <= 1; invert++) {
-        gdo_config_t config = k_config;
-        config.invert_uart = invert;
-        CHECK_EQ(gdo_init(&config), ESP_OK);
-        CHECK_EQ(gdo_deinit(), ESP_OK);
+        for (int started = 0; started <= 1; started++) {
+            gdo_config_t config = k_config;
+            config.invert_uart = invert;
+            CHECK_EQ(gdo_init(&config), ESP_OK);
+            CHECK_EQ(fake_gpio[config.uart_tx_pin].uart_tx, true);
+            if (started) {
+                CHECK_EQ(gdo_start(record_cb, NULL), ESP_OK);
+            }
+            CHECK_EQ(gdo_deinit(), ESP_OK);
 
-        fake_gpio_t tx = fake_gpio[config.uart_tx_pin];
-        CHECK_EQ(tx.level, invert ? 0 : 1);
-        CHECK_EQ(tx.mode, GPIO_MODE_OUTPUT);
-        CHECK_EQ(tx.pulled_up, false);
-        CHECK_EQ(tx.held, true);
+            fake_gpio_t tx = fake_gpio[config.uart_tx_pin];
+            CHECK_EQ(tx.uart_tx, false);
+            CHECK_EQ(tx.mode, GPIO_MODE_OUTPUT);
+            CHECK_EQ(tx.level, invert ? 0 : 1);
+            CHECK_EQ(tx.pull, invert ? GPIO_PULLDOWN_ONLY : GPIO_PULLUP_ONLY);
 
-        CHECK_EQ(gdo_init(&config), ESP_OK);
-        CHECK_EQ(fake_gpio[config.uart_tx_pin].held, false);
-        CHECK_EQ(gdo_deinit(), ESP_OK);
+            CHECK_EQ(gdo_init(&config), ESP_OK);
+            CHECK_EQ(fake_gpio[config.uart_tx_pin].uart_tx, true);
+            CHECK_EQ(gdo_deinit(), ESP_OK);
+        }
     }
 }
 

@@ -297,14 +297,6 @@ esp_err_t gdo_init(const gdo_config_t *config) {
         return err;
     }
 
-    // gdo_deinit() may have left TX held at its idle level across a restart. Release the
-    // hold only now that the UART (already configured above, including inversion) owns
-    // the pin: releasing it first would let the pad fall back to its default state, which
-    // can include the pull-up, until uart_set_pin() ran.
-    if (gpio_hold_dis(g_config.uart_tx_pin) != ESP_OK) {
-        ESP_LOGW(TAG, "Could not release the hold on TX pin %d", g_config.uart_tx_pin);
-    }
-
     gdo_tx_queue = xQueueCreate(16, sizeof(gdo_tx_message_t));
     if (!gdo_tx_queue) {
         return ESP_ERR_NO_MEM;
@@ -396,11 +388,18 @@ esp_err_t gdo_deinit(void) {
     g_status.door_position = -1;
     g_status.door_target = -1;
 
-    // Park TX at the UART idle level instead of gpio_reset_pin(), which enables the pull-up:
-    // with an inverted UART that is the "button pressed" level and holds it across a restart.
-    // Set the level, then route the pin to the GPIO output register (it is still muxed to the
-    // UART TX signal) and hold it, so it stays idle through a restart.
-    err = gpio_set_level(g_config.uart_tx_pin, g_config.invert_uart ? 0 : 1);
+    // Park TX at the UART idle level rather than gpio_reset_pin(), whose pull-up is the
+    // "button pressed" level on an inverted line and can move the door across a restart.
+    // gpio_set_direction(OUTPUT) also detaches the UART TX signal from the pin. The matching
+    // pull keeps it idle while uart_driver_delete() has the output disabled (IDF 5.4+
+    // releases the pin there), after which TX is driven again.
+    uint32_t tx_idle = g_config.invert_uart ? 0 : 1;
+    err = gpio_set_pull_mode(g_config.uart_tx_pin, tx_idle ? GPIO_PULLUP_ONLY : GPIO_PULLDOWN_ONLY);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    err = gpio_set_level(g_config.uart_tx_pin, tx_idle);
     if (err != ESP_OK) {
         goto done;
     }
@@ -410,17 +409,17 @@ esp_err_t gdo_deinit(void) {
         goto done;
     }
 
-    if (gpio_hold_en(g_config.uart_tx_pin) != ESP_OK) {
-        // Not fatal: the pin may not support hold; it is still parked until the restart.
-        ESP_LOGW(TAG, "Could not hold TX pin %d at idle", g_config.uart_tx_pin);
-    }
-
-    err = gpio_reset_pin(g_config.uart_rx_pin);
+    err = uart_driver_delete(g_config.uart_num);
     if (err != ESP_OK) {
         goto done;
     }
 
-    err = uart_driver_delete(g_config.uart_num);
+    err = gpio_set_direction(g_config.uart_tx_pin, GPIO_MODE_OUTPUT);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    err = gpio_reset_pin(g_config.uart_rx_pin);
 
 done:
     return err;
