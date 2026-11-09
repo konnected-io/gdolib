@@ -1429,13 +1429,16 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
     gdo_tx_message_t message;
     message.cmd = command;
     message.sent_ms = esp_timer_get_time() / 1000;
+    message.packet = (uint8_t*)malloc(19); // will be freed in the gdo_main_task
+    if (!message.packet) {
+        return ESP_ERR_NO_MEM;
+    }
 
     // if we are here without a protocol defined then V1 testing failed, proceed with v2
     if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) {
         uint64_t cmd = command;
         uint64_t fixed = ((cmd & ~0xff) << 24) | g_status.client_id;
         uint32_t data = (byte2 << 24) | (byte1 << 16) | (nibble << 8) | (cmd & 0xff);
-        message.packet = (uint8_t*)malloc(19); // will be freed in the gdo_main_task
         if (encode_wireline(g_status.rolling_code, fixed, data, message.packet) != 0) {
             free(message.packet);
             return ESP_FAIL;
@@ -1443,7 +1446,6 @@ static esp_err_t queue_command(gdo_command_t command, uint8_t nibble, uint8_t by
 
         g_status.rolling_code++;
     } else {
-        message.packet = (uint8_t*)malloc(1);
         *message.packet = command;
     }
 
