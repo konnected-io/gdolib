@@ -101,9 +101,51 @@ static void test_v1_packet_sent_after_switch_to_v2_stays_in_bounds(void) {
     CHECK_EQ(s_live_allocs - base, 0);
 }
 
+/* #58: a Sec+ 1.0 bus that stays busy keeps every queued poll stuck behind the collision
+ * retry while the 250 ms emulation timer keeps polling. Memory must stay bounded, and
+ * polling must resume once the bus clears. */
+static void test_v1_busy_bus_stays_bounded_and_recovers(void) {
+    start_v1();
+    int base = s_live_allocs;
+
+    esp_timer_create_args_t args = { .callback = v1_status_timer_cb, .name = "v1_status_timer" };
+    esp_timer_handle_t poll;
+    CHECK_EQ(esp_timer_create(&args, &poll), ESP_OK);
+    CHECK_EQ(esp_timer_start_periodic(poll, 250 * 1000), ESP_OK);
+
+    fake_gpio_level = 1;
+    int peak = 0;
+    for (uint32_t at = 5000; at <= 60000; at += 5000) {
+        wait_until(at);
+        run();
+        if (s_live_allocs - base > peak) {
+            peak = s_live_allocs - base;
+        }
+    }
+    CHECK_EQ(transmitted_count(), 0);
+    CHECK_EQ(tx_queue_depth(), TX_QUEUE_LEN);
+    // Each queued packet plus at most one pending collision-retry event per packet.
+    CHECK(peak <= 2 * TX_QUEUE_LEN);
+    int busy_allocs = s_live_allocs - base;
+
+    fake_gpio_level = 0;
+    wait_until(70000);
+    run();
+    CHECK(transmitted_count() > 0);
+    CHECK(tx_queue_depth() <= 1);
+    CHECK(s_live_allocs - base < busy_allocs);
+
+    int sent = transmitted_count();
+    wait_until(75000);
+    run();
+    // Back to one poll per 250 ms tick.
+    CHECK(transmitted_count() - sent >= 18);
+}
+
 RUN_TESTS(
     TEST(test_v2_queue_full_frees_packet),
     TEST(test_v1_queue_full_frees_packet),
     TEST(test_sent_packets_are_freed),
-    TEST(test_v1_packet_sent_after_switch_to_v2_stays_in_bounds)
+    TEST(test_v1_packet_sent_after_switch_to_v2_stays_in_bounds),
+    TEST(test_v1_busy_bus_stays_bounded_and_recovers)
 )
