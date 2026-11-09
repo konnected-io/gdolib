@@ -151,19 +151,29 @@ struct fake_timer {
 };
 // Deleted timers are disarmed but never freed, so a callback that deletes its own timer
 // (gdolib's scheduled commands do) can't leave fake_advance_to() holding a dangling pointer.
+// Their slots are reused by later creates.
 static struct fake_timer *s_timers[FAKE_MAX_TIMERS];
 static int s_timer_count;
 
 int64_t esp_timer_get_time(void) { return (int64_t)s_time_ms * 1000; }
 
 esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle_t *out) {
-    if (s_timer_count == FAKE_MAX_TIMERS) {
-        return ESP_ERR_NO_MEM;
+    struct fake_timer *t = NULL;
+    for (int i = 0; i < s_timer_count && !t; i++) {
+        if (!s_timers[i]->callback) {
+            t = s_timers[i];
+        }
     }
-    struct fake_timer *t = calloc(1, sizeof(*t));
+    if (!t) {
+        if (s_timer_count == FAKE_MAX_TIMERS) {
+            return ESP_ERR_NO_MEM;
+        }
+        t = calloc(1, sizeof(*t));
+        s_timers[s_timer_count++] = t;
+    }
+    memset(t, 0, sizeof(*t));
     t->callback = args->callback;
     t->arg = args->arg;
-    s_timers[s_timer_count++] = t;
     *out = t;
     return ESP_OK;
 }
