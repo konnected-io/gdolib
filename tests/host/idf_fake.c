@@ -250,9 +250,33 @@ bool fake_timer_armed(esp_timer_handle_t t) { return t && t->armed; }
 
 /* ---- gpio ---- */
 esp_err_t gpio_config(const gpio_config_t *cfg) { (void)cfg; return ESP_OK; }
-esp_err_t gpio_reset_pin(gpio_num_t pin) { (void)pin; return ESP_OK; }
+fake_gpio_t fake_gpio[GPIO_NUM_MAX];
+
+static int s_uart_tx_pin = -1;
+static bool s_uart_installed;
+
+esp_err_t gpio_reset_pin(gpio_num_t pin) {
+    fake_gpio[pin].mode = GPIO_MODE_DISABLE;
+    fake_gpio[pin].pull = GPIO_PULLUP_ONLY;
+    return ESP_OK;
+}
 int fake_gpio_level;
 int gpio_get_level(gpio_num_t pin) { (void)pin; return fake_gpio_level; }
+esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level) {
+    fake_gpio[pin].level = (int)level;
+    return ESP_OK;
+}
+esp_err_t gpio_set_direction(gpio_num_t pin, gpio_mode_t mode) {
+    fake_gpio[pin].mode = mode;
+    if (mode & GPIO_MODE_OUTPUT) {
+        fake_gpio[pin].uart_tx = false;
+    }
+    return ESP_OK;
+}
+esp_err_t gpio_set_pull_mode(gpio_num_t pin, gpio_pull_mode_t pull) {
+    fake_gpio[pin].pull = pull;
+    return ESP_OK;
+}
 esp_err_t gpio_install_isr_service(int flags) { (void)flags; return ESP_OK; }
 esp_err_t gpio_isr_handler_add(gpio_num_t pin, void (*isr)(void *), void *arg) {
     (void)pin; (void)isr; (void)arg;
@@ -262,19 +286,33 @@ esp_err_t gpio_isr_handler_add(gpio_num_t pin, void (*isr)(void *), void *arg) {
 /* ---- uart ---- */
 esp_err_t uart_param_config(uart_port_t num, const uart_config_t *cfg) { (void)num; (void)cfg; return ESP_OK; }
 esp_err_t uart_set_pin(uart_port_t num, int tx, int rx, int rts, int cts) {
-    (void)num; (void)tx; (void)rx; (void)rts; (void)cts;
+    (void)num; (void)rx; (void)rts; (void)cts;
+    if (tx >= 0) {
+        s_uart_tx_pin = tx;
+        fake_gpio[tx].mode = GPIO_MODE_OUTPUT;
+        fake_gpio[tx].uart_tx = true;
+    }
     return ESP_OK;
 }
 esp_err_t uart_set_line_inverse(uart_port_t num, uint32_t mask) { (void)num; (void)mask; return ESP_OK; }
 esp_err_t uart_driver_install(uart_port_t num, int rx_size, int tx_size, int queue_size,
                               QueueHandle_t *queue, int flags) {
     (void)num; (void)rx_size; (void)tx_size; (void)flags;
+    s_uart_installed = true;
     if (queue) {
         *queue = xQueueCreate(queue_size, sizeof(uart_event_t));
     }
     return ESP_OK;
 }
-esp_err_t uart_driver_delete(uart_port_t num) { (void)num; return ESP_OK; }
+esp_err_t uart_driver_delete(uart_port_t num) {
+    (void)num;
+    if (s_uart_installed && s_uart_tx_pin >= 0) {
+        fake_gpio[s_uart_tx_pin].mode = (gpio_mode_t)(fake_gpio[s_uart_tx_pin].mode & ~GPIO_MODE_OUTPUT);
+        s_uart_tx_pin = -1;
+    }
+    s_uart_installed = false;
+    return ESP_OK;
+}
 esp_err_t uart_set_baudrate(uart_port_t num, uint32_t baud) { (void)num; (void)baud; return ESP_OK; }
 esp_err_t uart_set_parity(uart_port_t num, uart_parity_t parity) { (void)num; (void)parity; return ESP_OK; }
 esp_err_t uart_wait_tx_done(uart_port_t num, TickType_t ticks) { (void)num; (void)ticks; return ESP_OK; }
@@ -324,6 +362,11 @@ void fake_reset(void) {
     fake_last_notify_timeout = 0;
     fake_on_queue_send = NULL;
     fake_on_idle = NULL;
+    for (int i = 0; i < GPIO_NUM_MAX; i++) {
+        fake_gpio[i] = (fake_gpio_t){.level = -1, .pull = GPIO_FLOATING};
+    }
+    s_uart_tx_pin = -1;
+    s_uart_installed = false;
 }
 
 void fake_set_time_ms(uint32_t ms) { s_time_ms = ms; }

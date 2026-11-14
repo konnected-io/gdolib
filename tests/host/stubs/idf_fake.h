@@ -109,7 +109,8 @@ esp_err_t esp_timer_delete(esp_timer_handle_t t);
 /* ---- gpio ---- */
 typedef int gpio_num_t;
 #define GPIO_NUM_MAX 49
-typedef enum { GPIO_MODE_INPUT = 1 } gpio_mode_t;
+typedef enum { GPIO_MODE_DISABLE = 0, GPIO_MODE_INPUT = 1, GPIO_MODE_OUTPUT = 2 } gpio_mode_t;
+typedef enum { GPIO_PULLUP_ONLY, GPIO_PULLDOWN_ONLY, GPIO_PULLUP_PULLDOWN, GPIO_FLOATING } gpio_pull_mode_t;
 typedef enum { GPIO_PULLUP_DISABLE = 0, GPIO_PULLUP_ENABLE } gpio_pullup_t;
 typedef enum { GPIO_PULLDOWN_DISABLE = 0, GPIO_PULLDOWN_ENABLE } gpio_pulldown_t;
 typedef enum { GPIO_INTR_DISABLE = 0, GPIO_INTR_NEGEDGE = 2 } gpio_int_type_t;
@@ -125,6 +126,9 @@ esp_err_t gpio_reset_pin(gpio_num_t pin);
 int gpio_get_level(gpio_num_t pin);
 /* What gpio_get_level() returns for every pin; 1 on the RX pin reads as a busy line. */
 extern int fake_gpio_level;
+esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level);
+esp_err_t gpio_set_direction(gpio_num_t pin, gpio_mode_t mode);
+esp_err_t gpio_set_pull_mode(gpio_num_t pin, gpio_pull_mode_t pull);
 esp_err_t gpio_install_isr_service(int flags);
 esp_err_t gpio_isr_handler_add(gpio_num_t pin, void (*isr)(void *), void *arg);
 
@@ -193,6 +197,17 @@ void fake_uart_rx(const uint8_t *bytes, size_t len);
 size_t fake_uart_rx_available(void);
 uint32_t fake_queue_depth(QueueHandle_t q);
 extern int fake_uart_flush_count;
+/* What the driver last did to each GPIO pad, following ESP-IDF 5.5: gpio_reset_pin() leaves
+ * it pulled up with input and output disabled; uart_set_pin() routes the UART TX signal to
+ * it; gpio_set_direction(OUTPUT) routes the GPIO output register instead; and
+ * uart_driver_delete() disables the TX output but leaves the routing. */
+typedef struct {
+    int level;              // last gpio_set_level(), -1 if never set
+    gpio_mode_t mode;
+    gpio_pull_mode_t pull;
+    bool uart_tx;           // output comes from the UART TX signal, not the level above
+} fake_gpio_t;
+extern fake_gpio_t fake_gpio[GPIO_NUM_MAX];
 /* Writes of a whole Sec+ v2 frame; transmit_packet() flushes RX once after each. */
 extern int fake_uart_frames_written;
 /* Every uart_write_bytes() call, in order. A Sec+ v2 transmit is two writes: a single 0x00

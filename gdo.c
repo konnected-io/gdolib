@@ -388,17 +388,38 @@ esp_err_t gdo_deinit(void) {
     g_status.door_position = -1;
     g_status.door_target = -1;
 
-    err = gpio_reset_pin(g_config.uart_tx_pin);
+    // Park TX at the UART idle level rather than gpio_reset_pin(), whose pull-up is the
+    // "button pressed" level on an inverted line and can move the door across a restart.
+    // gpio_set_direction(OUTPUT) also detaches the UART TX signal from the pin. The matching
+    // pull keeps it idle while uart_driver_delete() has the output disabled (IDF 5.4+
+    // releases the pin there), after which TX is driven again.
+    uint32_t tx_idle = g_config.invert_uart ? 0 : 1;
+    err = gpio_set_pull_mode(g_config.uart_tx_pin, tx_idle ? GPIO_PULLUP_ONLY : GPIO_PULLDOWN_ONLY);
     if (err != ESP_OK) {
         goto done;
     }
 
-    err = gpio_reset_pin(g_config.uart_rx_pin);
+    err = gpio_set_level(g_config.uart_tx_pin, tx_idle);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    err = gpio_set_direction(g_config.uart_tx_pin, GPIO_MODE_OUTPUT);
     if (err != ESP_OK) {
         goto done;
     }
 
     err = uart_driver_delete(g_config.uart_num);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    err = gpio_set_direction(g_config.uart_tx_pin, GPIO_MODE_OUTPUT);
+    if (err != ESP_OK) {
+        goto done;
+    }
+
+    err = gpio_reset_pin(g_config.uart_rx_pin);
 
 done:
     return err;
