@@ -65,6 +65,7 @@ typedef struct {
     gdo_protocol_type_t protocol;
     bool synced;
     bool obst_from_status;
+    bool non_inverted_uart; // the default matches inverted hardware, where fake_gpio_level 0 is idle
 } gdo_test_opts_t;
 
 static int s_cb_events[GDO_CB_EVENT_MAX];
@@ -164,6 +165,7 @@ static void start_gdo(gdo_test_opts_t opts) {
         .uart_tx_pin = 17,
         .uart_rx_pin = 21,
         .obst_in_pin = -1,
+        .invert_uart = !opts.non_inverted_uart,
     };
     fake_set_time_ms(t0());
     if (opts.protocol) {

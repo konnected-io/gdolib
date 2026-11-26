@@ -1948,7 +1948,7 @@ static void gdo_main_task(void* arg) {
                     break;
                 }
 
-                if (rx_pending || gpio_get_level(g_config.uart_rx_pin)) {
+                if (rx_pending || (!!gpio_get_level(g_config.uart_rx_pin) == g_config.invert_uart)) {
                     // If not synced yet just delete the message as the sync loop will resend it
                     if (!g_status.synced) {
                         xQueueReceive(gdo_tx_queue, &tx_message, 0);
